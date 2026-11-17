@@ -394,7 +394,9 @@ def _iter_sample_frames_with_indices(
     if not cap.isOpened():
         raise ValueError(f"Cannot open video: {video_path}")
 
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    from videowipe.video import frame_count
+
+    total = frame_count(video_path, cap)
     if total <= 0:
         cap.release()
         raise ValueError(f"Cannot determine frame count: {video_path}")

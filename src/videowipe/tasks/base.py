@@ -5,6 +5,7 @@ import time
 import cv2
 
 from videowipe.backends import load_backend
+from videowipe.video import frame_count
 
 
 def read_frame_info(video_path: str):
@@ -16,7 +17,7 @@ def read_frame_info(video_path: str):
         "W_ori": int(reader.get(cv2.CAP_PROP_FRAME_WIDTH) + 0.5),
         "H_ori": int(reader.get(cv2.CAP_PROP_FRAME_HEIGHT) + 0.5),
         "fps": reader.get(cv2.CAP_PROP_FPS),
-        "len": int(reader.get(cv2.CAP_PROP_FRAME_COUNT) + 0.5),
+        "len": frame_count(video_path, reader),
     }
     return reader, info
 
