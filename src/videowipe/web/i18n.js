@@ -337,10 +337,38 @@
     walkNode(root);
   }
 
+  // CSS generated content (e.g. `.stage.is-seeking::after { content:"…" }`)
+  // is not DOM text: rewrite quoted `content` strings in same-origin sheets.
+  function translateStyleRules(rules) {
+    for (var i = 0; rules && i < rules.length; i++) {
+      var rule = rules[i];
+      try {
+        if (rule.cssRules && rule.cssRules.length) translateStyleRules(rule.cssRules);
+        var content = rule.style && rule.style.content;
+        if (!content || !hasCJK(content)) continue;
+        var m = /^(["'])((?:\\.|(?!\1)[\s\S])*)\1$/.exec(content.trim());
+        if (!m) continue;
+        var raw = m[2].replace(/\\(.)/g, "$1");
+        var out = translate(raw);
+        if (out !== raw) {
+          rule.style.setProperty("content", JSON.stringify(out),
+            rule.style.getPropertyPriority("content"));
+        }
+      } catch (e) { /* skip rules we cannot read or write */ }
+    }
+  }
+  function translateStyles() {
+    if (activeLang === source || !document.styleSheets) return;
+    for (var i = 0; i < document.styleSheets.length; i++) {
+      try { translateStyleRules(document.styleSheets[i].cssRules); } catch (e) { /* cross-origin */ }
+    }
+  }
+
   function scan() {
     if (activeLang !== source && document.title && hasCJK(document.title)) {
       document.title = translate(document.title);
     }
+    translateStyles();
     if (!document.body) return;
     walk(document.body);
   }

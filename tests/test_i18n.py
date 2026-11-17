@@ -373,7 +373,8 @@ def test_index_route_returns_injected_page(monkeypatch):
 def test_dom_translation_headless(tmp_path):
     """A headless browser translates text set after load via MutationObserver."""
     rendered = i18n.render_index(
-        '<!doctype html><html lang="zh-CN"><head><title>检测目标</title></head><body>'
+        '<!doctype html><html lang="zh-CN"><head><title>检测目标</title>'
+        '<style>#static::after { content:"选择视频"; }</style></head><body>'
         '<header class="topbar"></header>'
         '<p id="static">检测目标</p>'
         '<button id="dyn" type="button"></button>'
@@ -415,6 +416,10 @@ def test_dom_translation_headless(tmp_path):
     () => document.querySelector("#dyn").textContent === "Download the finished video",
     null, {{ timeout: 5000 }}
   );
+  const generated = await page.evaluate(
+    () => getComputedStyle(document.querySelector("#static"), "::after").content
+  );
+  if (generated !== '"Choose video"') {{ console.error("css content", generated); process.exit(1); }}
   const title = await page.title();
   if (title !== "Detect targets") {{ console.error("title", title); process.exit(1); }}
   const placeholder = await page.getAttribute("#ph", "placeholder");
