@@ -1,8 +1,10 @@
 """CLI entry point for videowipe."""
 import argparse
 import sys
+import time
 
 from videowipe.engine import WipeEngine
+from videowipe.export import keep_only_hevc, output_codec
 
 
 def _build_parser():
@@ -27,6 +29,9 @@ def _build_parser():
     )
     sub.add_argument("-d", "--dual", action="store_true",
                      help="Show original video side-by-side")
+    sub.add_argument("--codec", choices=["h264", "h265"], default=None,
+                     help="Output codec: h264 (MP4, default) or h265 (10-bit HEVC + Opus "
+                          "in MKV; uses VideoToolbox when available)")
     sub.add_argument("--external-command", default=None,
                      help="External inpainting command (bypasses built-in STTN)")
     sub.add_argument("--model", default="sttn",
@@ -55,6 +60,9 @@ def _build_parser():
     )
     clean.add_argument("-d", "--dual", action="store_true",
                        help="Show original video side-by-side")
+    clean.add_argument("--codec", choices=["h264", "h265"], default=None,
+                       help="Output codec: h264 (MP4, default) or h265 (10-bit HEVC + Opus "
+                            "in MKV; uses VideoToolbox when available)")
     clean.add_argument(
         "--target",
         action="append",
@@ -136,19 +144,23 @@ def main():
         detect_mode=getattr(args, "detect_mode", "balanced"),
         ocr=getattr(args, "ocr", "auto"),
     )
+    started = time.time()
     try:
-        engine.process(
-            video=args.video,
-            mask=args.mask,
-            output=args.output,
-            targets=getattr(args, "target", None),
-            intent=getattr(args, "intent", None),
-            agent=getattr(args, "agent", None),
-            regions=getattr(args, "region", None),
-            preview=getattr(args, "preview", False),
-            confirm=getattr(args, "confirm", False),
-            plan=getattr(args, "plan", None),
-        )
+        with output_codec(getattr(args, "codec", None)):
+            engine.process(
+                video=args.video,
+                mask=args.mask,
+                output=args.output,
+                targets=getattr(args, "target", None),
+                intent=getattr(args, "intent", None),
+                agent=getattr(args, "agent", None),
+                regions=getattr(args, "region", None),
+                preview=getattr(args, "preview", False),
+                confirm=getattr(args, "confirm", False),
+                plan=getattr(args, "plan", None),
+            )
+        if getattr(args, "codec", None) == "h265":
+            keep_only_hevc(args.output, since=started)
     except Exception as exc:
         print(f"videowipe: {exc}", file=sys.stderr)
         sys.exit(1)

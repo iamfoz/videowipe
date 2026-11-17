@@ -249,6 +249,10 @@ class STTNInpainter:
             "-movflags", "+faststart",
             video_out_path,
         ]
+        if job.video_path and job.trial_range is None:
+            # Optional H.265 export, encoded from the same frames (fork addition).
+            from videowipe.export import hevc_output_args
+            ffmpeg_cmd += hevc_output_args(job.video_path, video_out_path, ori_h)
         stderr_file = tempfile.TemporaryFile()
         pipe = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stderr=stderr_file)
         stdin_closed = False
