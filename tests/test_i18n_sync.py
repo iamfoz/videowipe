@@ -66,10 +66,9 @@ def test_js_template_nested_interpolation():
     # Nested template and string inside ${...} must not confuse the scanner.
     code = "const s = `a ${'inner ${x}'} b`;"
     values = [v for _, v in mod.js_literals(code)]
-    # The outer literal has one interpolation -> {0}; the inner string is
-    # skipped while balancing braces, so it is not emitted separately here
-    # because it is not a top-level literal in this flat scan.
-    assert values == ["a {0} b"]
+    # The outer literal has one interpolation -> {0}; the string inside the
+    # interpolation is shown text too, so it is emitted after the outer one.
+    assert values == ["a {0} b", "inner ${x}"]
 
 
 def test_js_line_numbers():
@@ -478,3 +477,31 @@ def test_parse_model_json_strips_fences():
     assert mod._parse_model_json('noise {"a":"b"} noise') == {"a": "b"}
     with pytest.raises(ValueError):
         mod._parse_model_json("no json here")
+
+
+def test_js_literals_inside_template_interpolations_are_extracted():
+    code = 'x=`${a?"调整":"查看"}${b}区域 ${c?" 帧":""}`;'
+    values = [v for _, v in mod.js_literals(code)]
+    assert values[0] == "{0}{1}区域 {2}"
+    assert {"调整", "查看", " 帧"} <= set(values)
+
+
+def test_update_preserves_hand_added_extra_fragments(tmp_path):
+    path = _make_root(
+        tmp_path,
+        "<html><body><p>仍存在的串</p></body></html>",
+        locale={
+            "_meta": {"language": "en", "name": "English", "source_language": "zh-CN"},
+            "messages": {"仍存在的串": "Still here"},
+            "obsolete": {},
+            "extra": {"区域": "area"},
+        },
+    )
+    assert mod.run_update(_ns(tmp_path)) == 0
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["extra"] == {"区域": "area"}
+    assert "区域" not in doc["messages"] and "区域" not in doc["obsolete"]
+    # A second run is a no-op.
+    before = path.read_text(encoding="utf-8")
+    mod.run_update(_ns(tmp_path))
+    assert path.read_text(encoding="utf-8") == before
