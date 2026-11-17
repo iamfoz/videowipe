@@ -15,17 +15,19 @@ import unicodedata
 from pathlib import Path
 from fractions import Fraction
 from contextlib import asynccontextmanager, contextmanager
+from typing import Literal
 
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field, StrictInt
 
 from videowipe.api import CancellationToken, ProgressEvent, WipeRequest
 from videowipe.engine import WipeEngine
 from videowipe.errors import InvalidInputError, ProcessingCancelledError
+from videowipe.export import hevc_path, inject_ui, output_codec
 from videowipe.plan import (
     JSON_FILENAME,
     load_wipe_plan,
@@ -84,6 +86,7 @@ class ConfirmRequest(BaseModel):
 
     segment_overrides: dict[str, list[tuple[StrictInt, StrictInt]]] | None = None
     protections: list[ProtectionRequest] | None = Field(default=None, max_length=64)
+    output_codec: Literal["h264", "h265"] | None = None  # fork: optional H.265 export
 
 
 class TrialRequest(ConfirmRequest):
@@ -318,16 +321,17 @@ def _run_inpaint(job: Job, run_dir: Path) -> None:
         save_wipe_plan(plan, str(run_dir))
         _update_progress(job, ProgressEvent("prepare", 0, 1))
         job.device = _get_engine()._trial_identity()
-        result = _get_engine().run(
-            WipeRequest(
-                video=job.video_path,
-                output_dir=str(run_dir),
-                plan=plan_path,
-                prediction_cache_dir=_prediction_directory(job),
-            ),
-            on_progress=lambda event: _update_progress(job, event),
-            cancellation=job.token,
-        )
+        with output_codec(getattr(job, "output_codec", None)):
+            result = _get_engine().run(
+                WipeRequest(
+                    video=job.video_path,
+                    output_dir=str(run_dir),
+                    plan=plan_path,
+                    prediction_cache_dir=_prediction_directory(job),
+                ),
+                on_progress=lambda event: _update_progress(job, event),
+                cancellation=job.token,
+            )
         _job_file(job, result.output_path)
         with job.lock:
             job.token.raise_if_cancelled()
@@ -445,7 +449,7 @@ def clear_prediction_cache(job_id: str):
 
 @app.get("/")
 def index():
-    return FileResponse(_web_index())
+    return HTMLResponse(inject_ui(_web_index().read_text(encoding="utf-8")))
 
 
 @app.post("/jobs")
@@ -786,6 +790,7 @@ def confirm(job_id: str, body: ConfirmRequest):
             run_dir = _job_path(job, Path(job.output_dir) / "runs" / uuid.uuid4().hex)
             save_wipe_plan(plan, str(run_dir))
             job.selected_ids = selected_ids
+            job.output_codec = body.output_codec or getattr(job, "output_codec", None)
             job.confirmed_review = dict(job.overrides)
             job.error = None
             job.progress = 0.0
@@ -1019,8 +1024,13 @@ def download(job_id: str):
     job = get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
+    result = _result_file(job)
+    hevc = Path(hevc_path(str(result)))
+    if hevc.is_file():  # H.265 export written alongside the review MP4
+        return FileResponse(hevc, media_type="video/x-matroska",
+                            filename=f"{Path(job.original_filename).stem}_clean.mkv")
     return FileResponse(
-        _result_file(job), media_type="video/mp4",
+        result, media_type="video/mp4",
         filename=f"{Path(job.original_filename).stem}_clean.mp4",
     )
 

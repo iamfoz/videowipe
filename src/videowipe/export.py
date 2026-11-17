@@ -143,14 +143,15 @@ def _encoder_help(name: str) -> str:
 
 @functools.lru_cache(maxsize=None)
 def _videotoolbox_works() -> bool:
-    """True when hevc_videotoolbox exists *and* can encode 10-bit HEVC here
-    (it is missing on non-Apple builds and on Macs without HEVC hardware)."""
+    """True when hevc_videotoolbox exists *and* can encode 10-bit constant-
+    quality HEVC here (missing on non-Apple builds; constant quality needs
+    Apple Silicon)."""
     if "hevc_videotoolbox" not in _encoder_help("hevc_videotoolbox"):
         return False
     return _capture([
         "ffmpeg", "-hide_banner", "-v", "error", "-f", "lavfi", "-i",
         "testsrc=size=256x144:rate=25", "-frames:v", "2", "-c:v", "hevc_videotoolbox",
-        "-profile:v", "main10", "-pix_fmt", "p010le", "-f", "null", "-",
+        "-q:v", "50", "-profile:v", "main10", "-pix_fmt", "p010le", "-f", "null", "-",
     ], timeout=60) is not None
 
 
@@ -237,3 +238,18 @@ def keep_only_hevc(output_dir: str, since: float) -> list[str]:
         except OSError:
             continue
     return kept
+
+
+_EXPORT_JS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "export.js")
+
+
+def inject_ui(html: str) -> str:
+    """Add the output-format control script before ``</body>`` (web UI)."""
+    try:
+        with open(_EXPORT_JS, encoding="utf-8") as fh:
+            script = fh.read()
+    except OSError:
+        return html
+    tag = f"<script>{script}</script>\n"
+    at = html.lower().rfind("</body>")
+    return html[:at] + tag + html[at:] if at != -1 else html + tag

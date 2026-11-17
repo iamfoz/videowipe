@@ -1328,3 +1328,42 @@ def test_interrupted_trial_retry_keeps_latest_interval_and_never_exports_full(cl
     assert server_app.retry(job_id, server_app.RetryRequest(operation_id='retry-trial')) == {'retried': 'trial'}
     assert len(calls) == 1 and calls[0].start_seconds == .5 and calls[0].duration_seconds == .5
     assert calls[0].operation_id == 'retry-trial'
+
+
+def test_h265_choice_reaches_engine_and_download_serves_mkv(client, tmp_path, monkeypatch):
+    from videowipe import export
+
+    test_client, fake = client
+    video = tmp_path / "input.mp4"
+    _write_test_video(video)
+    seen = []
+    original_run = type(fake).run
+
+    def run(self, request, on_progress=None, cancellation=None):
+        seen.append(export.current_codec())
+        result = original_run(self, request, on_progress, cancellation)
+        if request.plan and export.current_codec() == "h265":
+            Path(export.hevc_path(result.output_path)).write_bytes(b"mkv")
+        return result
+
+    monkeypatch.setattr(type(fake), "run", run)
+    job_id = _post_video(test_client, video).json()["id"]
+    _wait_for_state(test_client, job_id, "preview_ready")
+    bad = test_client.post(f"/jobs/{job_id}/confirm", json={"selected_ids": ["c1"], "output_codec": "vp9"})
+    assert bad.status_code == 422
+    test_client.post(f"/jobs/{job_id}/confirm", json={"selected_ids": ["c1"], "output_codec": "h265"})
+    _wait_for_state(test_client, job_id, "done")
+    assert seen[-1] == "h265" and export.current_codec() == "h264"
+    download = test_client.get(f"/jobs/{job_id}/download")
+    assert download.status_code == 200 and download.content == b"mkv"
+    assert download.headers["content-type"].startswith("video/x-matroska")
+    assert "input_clean.mkv" in download.headers["content-disposition"]
+    # The in-browser review keeps playing the H.264 copy.
+    review = test_client.get(f"/jobs/{job_id}/result-video", headers={"Range": "bytes=0-3"})
+    assert review.status_code == 206 and review.content != b"mkv"
+
+
+def test_index_injects_output_format_control(client):
+    test_client, _ = client
+    page = test_client.get("/").text
+    assert 'id = "outputCodec"' in page and page.index("outputCodec") > page.index("<body")
