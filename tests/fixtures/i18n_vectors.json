@@ -1,0 +1,222 @@
+[
+  {
+    "name": "no-cjk-passthrough",
+    "messages": {
+      "检测目标": "Detect targets",
+      "试擦 {0}": "Trial {0}"
+    },
+    "input": "hello world",
+    "expected": "hello world"
+  },
+  {
+    "name": "no-cjk-fullwidth-only",
+    "messages": {
+      "：": ":",
+      "，": ","
+    },
+    "input": "abc 123",
+    "expected": "abc 123"
+  },
+  {
+    "name": "whitespace-preservation",
+    "messages": {
+      "检测目标": "Detect targets"
+    },
+    "input": "  检测目标  ",
+    "expected": "  Detect targets  "
+  },
+  {
+    "name": "leading-whitespace",
+    "messages": {
+      "保存": "Save"
+    },
+    "input": "  保存",
+    "expected": "  Save"
+  },
+  {
+    "name": "trailing-whitespace",
+    "messages": {
+      "保存": "Save"
+    },
+    "input": "保存   ",
+    "expected": "Save   "
+  },
+  {
+    "name": "exact-match",
+    "messages": {
+      "检测目标": "Detect targets"
+    },
+    "input": "检测目标",
+    "expected": "Detect targets"
+  },
+  {
+    "name": "missing-key-fallback",
+    "messages": {
+      "检测目标": "Detect targets"
+    },
+    "input": "未收录的字符串",
+    "expected": "未收录的字符串"
+  },
+  {
+    "name": "empty-value-falls-back-to-fragment",
+    "messages": {
+      "检测目标": "",
+      "目标": "target"
+    },
+    "input": "检测目标",
+    "expected": "检测target"
+  },
+  {
+    "name": "empty-value-no-fragment-falls-through",
+    "messages": {
+      "保存": ""
+    },
+    "input": "保存",
+    "expected": "保存"
+  },
+  {
+    "name": "single-placeholder-pattern",
+    "messages": {
+      "试擦 {0}": "Trial {0}"
+    },
+    "input": "试擦 00:01",
+    "expected": "Trial 00:01"
+  },
+  {
+    "name": "multi-placeholder-pattern",
+    "messages": {
+      "试擦 {0}–{1}": "Trial {0}–{1}"
+    },
+    "input": "试擦 00:01–00:03",
+    "expected": "Trial 00:01–00:03"
+  },
+  {
+    "name": "reordered-placeholders",
+    "messages": {
+      "试擦 {0}–{1}": "{1} to {0}"
+    },
+    "input": "试擦 00:01–00:03",
+    "expected": "00:03 to 00:01"
+  },
+  {
+    "name": "recursive-group-translation",
+    "messages": {
+      "试擦 {0}–{1}": "Trial {0}–{1}",
+      "正在保存…": "Saving…",
+      "取消静音": "Unmute"
+    },
+    "input": "试擦 正在保存…–取消静音",
+    "expected": "Trial Saving…–Unmute"
+  },
+  {
+    "name": "pattern-with-literal-context",
+    "messages": {
+      "处理约剩 {0} 秒": "processing, about {0}s left"
+    },
+    "input": "处理约剩 12 秒",
+    "expected": "processing, about 12s left"
+  },
+  {
+    "name": "fragment-fallback-lead",
+    "messages": {
+      "需留意：": "Attention:"
+    },
+    "input": "需留意：帧率不稳",
+    "expected": "Attention:帧率不稳"
+  },
+  {
+    "name": "fragment-fallback-embedded",
+    "messages": {
+      "正在保存…": "Saving…"
+    },
+    "input": "前缀 正在保存… 后缀",
+    "expected": "前缀 Saving… 后缀"
+  },
+  {
+    "name": "fragment-fallback-concat",
+    "messages": {
+      "需留意：": "Attention:",
+      "帧率不稳": "unstable frame rate",
+      "色深未知": "colour depth unknown"
+    },
+    "input": "需留意：帧率不稳；色深未知",
+    "expected": "Attention:unstable frame rate；colour depth unknown"
+  },
+  {
+    "name": "longest-first-fragments",
+    "messages": {
+      "取消静音": "Unmute",
+      "静音": "Mute"
+    },
+    "input": "取消静音",
+    "expected": "Unmute"
+  },
+  {
+    "name": "longer-pattern-preferred",
+    "messages": {
+      "试擦 {0}–{1}": "Trial {0}–{1}",
+      "试擦 {0}": "Trial {0}"
+    },
+    "input": "试擦 00:01–00:03",
+    "expected": "Trial 00:01–00:03"
+  },
+  {
+    "name": "pattern-beats-fragment",
+    "messages": {
+      "试擦 {0}–{1}": "Trial {0}–{1}",
+      "试擦": "Trial"
+    },
+    "input": "试擦 00:01–00:03",
+    "expected": "Trial 00:01–00:03"
+  },
+  {
+    "name": "fragment-after-pattern-miss",
+    "messages": {
+      "试擦 {0}–{1}": "Trial {0}–{1}",
+      "试擦": "Trial"
+    },
+    "input": "试擦 00:01",
+    "expected": "Trial 00:01"
+  },
+  {
+    "name": "cjk-punctuation-marks-cjk",
+    "messages": {
+      "：": ":"
+    },
+    "input": "：",
+    "expected": ":"
+  },
+  {
+    "name": "multiple-fragments-left-to-right",
+    "messages": {
+      "帧率不稳": "unstable frame rate",
+      "色深未知": "colour depth unknown"
+    },
+    "input": "帧率不稳；色深未知",
+    "expected": "unstable frame rate；colour depth unknown"
+  },
+  {
+    "name": "trailing whitespace and newline preserved",
+    "messages": {
+      "保存": "Save"
+    },
+    "input": "保存  \n",
+    "expected": "Save  \n"
+  },
+  {
+    "name": "non-CJK script (Cyrillic) passes through",
+    "messages": {
+      "保存": "Save"
+    },
+    "input": "Привет",
+    "expected": "Привет"
+  },
+  {
+    "name": "non-CJK key never applied",
+    "messages": {
+      "Привет": "Hello"
+    },
+    "input": "Привет",
+    "expected": "Привет"
+  }
+]

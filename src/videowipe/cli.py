@@ -3,6 +3,7 @@ import argparse
 import sys
 
 from videowipe.engine import WipeEngine
+from videowipe.i18n import translate
 
 
 def _build_parser():
@@ -114,7 +115,7 @@ def main():
             import uvicorn
         except ImportError:
             print(
-                "videowipe: install web support with `pip install videowipe[web]`",
+                translate("videowipe: install web support with `pip install videowipe[web]`"),
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -150,14 +151,15 @@ def main():
             plan=getattr(args, "plan", None),
         )
     except Exception as exc:
-        print(f"videowipe: {exc}", file=sys.stderr)
+        print(f"videowipe: {translate(str(exc))}", file=sys.stderr)
         sys.exit(1)
     finally:
         decision = getattr(engine, "agent_decision", {})
         if args.command == "clean" and decision:
             print(
-                f"Agent selection: status={decision['status']}; "
-                f"source={decision['selection_source']}; reason={decision['reason']}",
+                f"Agent selection: status={translate(str(decision['status']))}; "
+                f"source={translate(str(decision['selection_source']))}; "
+                f"reason={translate(str(decision['reason']))}",
                 file=sys.stderr,
             )
         engine.cleanup()
