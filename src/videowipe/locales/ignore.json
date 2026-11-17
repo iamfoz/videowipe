@@ -1,6 +1,7 @@
 {
   "paths": [
-    "src/videowipe/detect.py"
+    "src/videowipe/detect.py",
+    "src/videowipe/web/i18n.js"
   ],
   "strings": []
 }
