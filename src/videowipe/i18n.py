@@ -60,6 +60,32 @@ def _build_pattern(key: str):
     return re.compile("^" + "".join(pattern) + "$"), number_to_group
 
 
+def _is_ambiguous(key: str) -> bool:
+    """Adjacent placeholders (``{0}{1}``) cannot be split reliably: skip them."""
+    return re.search(r"\}\{", key) is not None
+
+
+def _is_bounded(key: str) -> bool:
+    """A pattern key that starts and ends with literal text can safely be
+    searched for inside a longer string (fragment pass)."""
+    return not (key.startswith("{") or key.endswith("}"))
+
+
+def _literal_length(key: str) -> int:
+    return sum(len(p) for p in re.split(r"(\{\d+\})", key) if not p.startswith("{"))
+
+
+_WORD_EDGE = re.compile(r"[A-Za-z0-9]")
+
+
+def _join(left: str, right: str) -> str:
+    """Concatenate translated pieces; CJK needs no spaces between words but
+    English does, so add one where two word characters would touch."""
+    if left and right and _WORD_EDGE.match(left[-1]) and _WORD_EDGE.match(right[0]):
+        return left + " " + right
+    return left + right
+
+
 def translate_core(text: str, messages: dict[str, str], _depth: int = 0) -> str:
     """Translate the trimmed *text* against *messages*. Shared algorithm —
     see ``web/i18n.js`` and ``tests/fixtures/i18n_vectors.json``.
@@ -74,52 +100,64 @@ def translate_core(text: str, messages: dict[str, str], _depth: int = 0) -> str:
     if exact:
         return exact
 
-    # 4. Pattern match, in order of descending literal (non-placeholder) length.
+    patterns = []
     if _depth < _MAX_DEPTH:
-        pattern_keys = []
         for key, value in messages.items():
-            if value and _is_pattern_key(key):
-                literal_len = sum(
-                    len(part)
-                    for part in re.split(r"(\{\d+\})", key)
-                    if not part.startswith("{")
-                )
-                pattern_keys.append((literal_len, key, value))
-        pattern_keys.sort(key=lambda item: item[0], reverse=True)
-        for _, key, value in pattern_keys:
-            regex, number_to_group = _build_pattern(key)
-            match = regex.match(text)
-            if match:
-                return _apply_value(value, match, number_to_group, messages, _depth)
+            if value and _is_pattern_key(key) and not _is_ambiguous(key):
+                patterns.append((_literal_length(key), key, value))
+        patterns.sort(key=lambda item: item[0], reverse=True)
 
-    # 5. Fragment fallback: non-pattern keys with non-empty values, longest
-    #    first, scanning left to right without re-replacing produced output.
-    fragments = [
-        (len(key), key, value)
-        for key, value in messages.items()
-        if value and not _is_pattern_key(key) and key in text
-    ]
-    if not fragments:
+    # 4. Pattern match (anchored), in order of descending literal length.
+    for _, key, value in patterns:
+        regex, number_to_group = _build_pattern(key)
+        match = regex.match(text)
+        if match:
+            return _apply_value(value, match, number_to_group, messages, _depth)
+
+    # 5. Fragment fallback: plain keys found as substrings, plus bounded
+    #    patterns searched unanchored. Earliest match wins, then the longest;
+    #    output is never re-scanned.
+    candidates = []
+    for key, value in messages.items():
+        if value and not _is_pattern_key(key) and key in text:
+            candidates.append((None, key, value))
+    for _, key, value in patterns:
+        if _is_bounded(key):
+            regex, number_to_group = _build_pattern(key)
+            candidates.append(((re.compile(regex.pattern[1:-1]), number_to_group), key, value))
+    if not candidates:
         return text
 
-    result = []
+    result = ""
     start = 0
     while start < len(text):
         best = None
-        for length, key, value in fragments:
-            at = text.find(key, start)
-            if at == -1:
-                continue
-            if best is None or at < best[0] or (at == best[0] and length > best[1]):
-                best = (at, length, key, value)
+        for compiled, key, value in candidates:
+            if compiled is None:
+                at = text.find(key, start)
+                if at == -1:
+                    continue
+                end, match = at + len(key), None
+            else:
+                match = compiled[0].search(text, start)
+                if match is None:
+                    continue
+                at, end = match.start(), match.end()
+            if best is None or at < best[0] or (at == best[0] and end > best[1]):
+                best = (at, end, compiled, value, match)
         if best is None:
             break
-        at, _, key, value = best
-        result.append(translate_core(text[start:at], messages, _depth))
-        result.append(value)
-        start = at + len(key)
-    result.append(translate_core(text[start:], messages, _depth))
-    return "".join(result)
+        at, end, compiled, value, match = best
+        result = _join(result, translate_core(text[start:at], messages, _depth))
+        if compiled is None:
+            piece = value
+        else:
+            piece = _apply_value(value, match, compiled[1], messages, _depth)
+        result = _join(result, piece)
+        start = end
+    if start == 0:
+        return text
+    return _join(result, translate_core(text[start:], messages, _depth))
 
 
 def _apply_value(
@@ -200,9 +238,14 @@ def load_catalogue(code: str) -> dict | None:
         try:
             loaded = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(loaded, dict) and isinstance(loaded.get("messages"), dict):
+                # "extra" holds hand-added fragment keys for text upstream only
+                # builds by concatenation; extracted messages take precedence.
+                extra = loaded.get("extra")
+                merged = dict(extra) if isinstance(extra, dict) else {}
+                merged.update({k: v for k, v in loaded["messages"].items() if v})
                 catalogue = {
                     k: v
-                    for k, v in loaded["messages"].items()
+                    for k, v in merged.items()
                     if isinstance(k, str) and isinstance(v, str) and v
                 }
         except (OSError, ValueError) as error:

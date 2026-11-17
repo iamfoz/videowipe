@@ -81,6 +81,18 @@
     return out;
   }
 
+  function isAmbiguous(key) { return /\}\{/.test(key); }
+  function isBounded(key) { return key.charAt(0) !== "{" && key.charAt(key.length - 1) !== "}"; }
+  var WORD_EDGE = /[A-Za-z0-9]/;
+  // CJK needs no spaces between words but English does: add one where two
+  // word characters would touch.
+  function join(left, right) {
+    if (left && right && WORD_EDGE.test(left.charAt(left.length - 1)) && WORD_EDGE.test(right.charAt(0))) {
+      return left + " " + right;
+    }
+    return left + right;
+  }
+
   function translateCore(text, messages, depth) {
     depth = depth || 0;
     if (!hasCJK(text)) return text;
@@ -88,48 +100,64 @@
     // 3. Exact match.
     if (Object.prototype.hasOwnProperty.call(messages, text) && messages[text]) return messages[text];
 
-    // 4. Pattern match, descending literal length.
+    var patterns = [];
     if (depth < MAX_DEPTH) {
-      var patterns = [];
       for (var key in messages) {
-        if (!messages[key] || !isPatternKey(key)) continue;
+        if (!messages[key] || !isPatternKey(key) || isAmbiguous(key)) continue;
         patterns.push({ literal: literalLength(key), key: key, value: messages[key] });
       }
+      // Stable sort, descending literal length (insertion order breaks ties, as in Python).
       patterns.sort(function (a, b) { return b.literal - a.literal; });
-      for (var i = 0; i < patterns.length; i++) {
-        var built = buildPattern(patterns[i].key);
-        var match = built.regex.exec(text);
-        if (match) return applyValue(patterns[i].value, match, built.numberToGroup, messages, depth);
-      }
     }
 
-    // 5. Fragment fallback: non-pattern keys, longest first, left to right,
-    //    without re-replacing produced output.
-    var fragments = [];
+    // 4. Pattern match (anchored), descending literal length.
+    for (var i = 0; i < patterns.length; i++) {
+      var built = buildPattern(patterns[i].key);
+      var match = built.regex.exec(text);
+      if (match) return applyValue(patterns[i].value, match, built.numberToGroup, messages, depth);
+    }
+
+    // 5. Fragment fallback: plain keys as substrings plus bounded patterns
+    //    searched unanchored; earliest match wins, then the longest.
+    var candidates = [];
     for (var fkey in messages) {
       if (!messages[fkey] || isPatternKey(fkey)) continue;
-      if (text.indexOf(fkey) !== -1) fragments.push({ len: fkey.length, key: fkey, value: messages[fkey] });
+      if (text.indexOf(fkey) !== -1) candidates.push({ key: fkey, value: messages[fkey], re: null });
     }
-    if (!fragments.length) return text;
+    for (var p = 0; p < patterns.length; p++) {
+      if (!isBounded(patterns[p].key)) continue;
+      var b = buildPattern(patterns[p].key);
+      var src = b.regex.source;
+      candidates.push({ key: patterns[p].key, value: patterns[p].value,
+        re: new RegExp(src.slice(1, -1), "g"), numberToGroup: b.numberToGroup });
+    }
+    if (!candidates.length) return text;
 
     var out = "";
     var start = 0;
     while (start < text.length) {
       var best = null;
-      for (var j = 0; j < fragments.length; j++) {
-        var at = text.indexOf(fragments[j].key, start);
-        if (at === -1) continue;
-        if (!best || at < best.at || (at === best.at && fragments[j].len > best.len)) {
-          best = { at: at, len: fragments[j].len, key: fragments[j].key, value: fragments[j].value };
+      for (var j = 0; j < candidates.length; j++) {
+        var c = candidates[j], at, end, m = null;
+        if (!c.re) {
+          at = text.indexOf(c.key, start);
+          if (at === -1) continue;
+          end = at + c.key.length;
+        } else {
+          c.re.lastIndex = start;
+          m = c.re.exec(text);
+          if (!m) continue;
+          at = m.index; end = at + m[0].length;
         }
+        if (!best || at < best.at || (at === best.at && end > best.end)) best = { at: at, end: end, c: c, m: m };
       }
       if (!best) break;
-      out += translateCore(text.slice(start, best.at), messages, depth);
-      out += best.value;
-      start = best.at + best.key.length;
+      out = join(out, translateCore(text.slice(start, best.at), messages, depth));
+      out = join(out, best.c.re ? applyValue(best.c.value, best.m, best.c.numberToGroup, messages, depth) : best.c.value);
+      start = best.end;
     }
-    out += translateCore(text.slice(start), messages, depth);
-    return out;
+    if (start === 0) return text;
+    return join(out, translateCore(text.slice(start), messages, depth));
   }
 
   function messagesFor(code) {
@@ -253,10 +281,10 @@
   function translateTextNode(node) {
     var value = node.nodeValue;
     if (!value || !hasCJK(value)) return;
+    var rec = attrRecord(node); // what we last wrote, to keep the observer quiet
+    if (rec.text === value) return;
     var translated = translate(value);
     if (translated === value) return;
-    var rec = attrRecord(node); // remember per node to keep the observer quiet
-    if (rec.text === translated) return;
     rec.text = translated;
     node.nodeValue = translated;
   }
@@ -266,11 +294,12 @@
       if (el.hasAttribute && el.hasAttribute(attr)) {
         var current = el.getAttribute(attr);
         if (current && hasCJK(current)) {
-          var value = translate(current);
           var rec = attrRecord(el);
-          if (rec[attr] !== value) {
-            if (value !== current) el.setAttribute(attr, value);
+          if (rec[attr] === current) continue;
+          var value = translate(current);
+          if (value !== current) {
             rec[attr] = value;
+            el.setAttribute(attr, value);
           }
         }
       }
@@ -278,11 +307,10 @@
     if (isButtonInput(el)) {
       var btnValue = el.value;
       if (btnValue && hasCJK(btnValue)) {
-        var tv = translate(btnValue);
         var brec = attrRecord(el);
-        if (brec.value !== tv) {
-          if (tv !== btnValue) el.value = tv;
-          brec.value = tv;
+        if (brec.value !== btnValue) {
+          var tv = translate(btnValue);
+          if (tv !== btnValue) { brec.value = tv; el.value = tv; }
         }
       }
     }
@@ -310,6 +338,9 @@
   }
 
   function scan() {
+    if (activeLang !== source && document.title && hasCJK(document.title)) {
+      document.title = translate(document.title);
+    }
     if (!document.body) return;
     walk(document.body);
   }
@@ -323,7 +354,10 @@
           for (var j = 0; j < mutation.addedNodes.length; j++) {
             var added = mutation.addedNodes[j];
             if (added.nodeType === Node.TEXT_NODE) translateTextNode(added);
-            else if (added.nodeType === Node.ELEMENT_NODE) walk(added);
+            else if (added.nodeType === Node.ELEMENT_NODE && !shouldSkipElement(added)) {
+              translateElement(added); // the added element's own attributes
+              walk(added);
+            }
           }
         } else if (mutation.type === "characterData") {
           translateTextNode(mutation.target);

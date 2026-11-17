@@ -161,11 +161,13 @@ def _skip_interpolation(code: str, start: int) -> int:
     return n
 
 
-def _read_template(code: str, start: int) -> tuple[str | None, int]:
+def _read_template(code: str, start: int, spans: list | None = None) -> tuple[str | None, int]:
     """Read a template literal whose opening backtick precedes *start*.
 
     Returns (value, close_index) where every ${...} interpolation became
     {0}, {1}, ... in order. Returns (None, len(code)) if unterminated.
+    If *spans* is given, the (start, end) offsets of each interpolation's
+    expression are appended to it so nested literals can be scanned too.
     """
     n = len(code)
     i = start
@@ -187,7 +189,10 @@ def _read_template(code: str, start: int) -> tuple[str | None, int]:
             current = []
             parts.append("{%d}" % placeholders)
             placeholders += 1
-            i = _skip_interpolation(code, i + 2)
+            end = _skip_interpolation(code, i + 2)
+            if spans is not None:
+                spans.append((i + 2, end - 1))
+            i = end
             continue
         if ch == "`":
             parts.append(_unescape_js("".join(current)))
@@ -235,9 +240,14 @@ def js_literals(code: str, base_line: int = 1):
             i += 1
             continue
         if ch == "`":
-            value, close = _read_template(code, i + 1)
+            spans: list = []
+            value, close = _read_template(code, i + 1, spans)
             if value is not None:
                 yield code.count("\n", 0, i) + base_line, value
+                # Literals nested in ${...} (e.g. `${ok ? "是" : "否"}`) are
+                # shown text too: scan each interpolation expression.
+                for s, e in spans:
+                    yield from js_literals(code[s:e], code.count("\n", 0, s) + base_line)
                 i = close + 1
                 continue
             i += 1
@@ -437,6 +447,17 @@ def load_catalogue(path: Path) -> tuple[dict, dict, dict]:
     return meta, messages, obsolete
 
 
+def _existing_extra(path: Path) -> dict:
+    """Hand-added fragment keys ("extra") are curated by translators for text
+    upstream only builds by concatenation; sync never adds, moves or drops them."""
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    extra = doc.get("extra") if isinstance(doc, dict) else None
+    return {k: extra[k] for k in sorted(extra)} if isinstance(extra, dict) else {}
+
+
 def write_catalogue(path: Path, language: str, name: str, messages: dict, obsolete: dict) -> None:
     doc = {
         "_meta": {
@@ -447,6 +468,9 @@ def write_catalogue(path: Path, language: str, name: str, messages: dict, obsole
         "messages": {k: messages[k] for k in sorted(messages)},
         "obsolete": {k: obsolete[k] for k in sorted(obsolete)},
     }
+    extra = _existing_extra(path)
+    if extra:
+        doc["extra"] = extra
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -529,6 +553,9 @@ def _write_if_changed(path, meta, messages, obsolete) -> bool:
         "messages": {k: messages[k] for k in sorted(messages)},
         "obsolete": {k: obsolete[k] for k in sorted(obsolete)},
     }
+    extra = _existing_extra(path)
+    if extra:
+        doc["extra"] = extra
     after = json.dumps(doc, ensure_ascii=False, indent=2) + "\n"
     if before == after:
         return False
