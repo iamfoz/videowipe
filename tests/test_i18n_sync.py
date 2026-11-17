@@ -505,3 +505,13 @@ def test_update_preserves_hand_added_extra_fragments(tmp_path):
     before = path.read_text(encoding="utf-8")
     mod.run_update(_ns(tmp_path))
     assert path.read_text(encoding="utf-8") == before
+
+
+def test_css_content_strings_are_extracted():
+    html = (
+        "<html><head><style>\n.a::after { content:\"正在定位画面…\"; }\n"
+        ".b::before { content: '' }\n.c { content:'左\\'右'; }</style></head><body></body></html>"
+    )
+    values = [v for _, v in mod._html_strings(html)]
+    assert "正在定位画面…" in values
+    assert "左'右" in values

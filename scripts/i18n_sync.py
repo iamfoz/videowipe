@@ -292,7 +292,7 @@ def _html_text_strings(html: str):
 
         def handle_data(self, data):
             if self._in_script or self._in_style:
-                return  # JS is scanned separately; CSS is never translated
+                return  # JS and CSS `content:` strings are scanned separately
             line, _ = self.getpos()
             self.items.append((line, data))
 
@@ -303,6 +303,16 @@ def _html_text_strings(html: str):
 
 
 _SCRIPT_BLOCK_RE = re.compile(r"<script\b[^>]*>(.*?)</script>", re.S | re.I)
+_STYLE_BLOCK_RE = re.compile(r"<style\b[^>]*>(.*?)</style>", re.S | re.I)
+# CSS generated content, e.g. `.stage.is-seeking::after { content:"正在定位画面…"; }`
+_CSS_CONTENT_RE = re.compile(r"""\bcontent\s*:\s*(["'])((?:\\.|(?!\1).)*)\1""", re.S)
+
+
+def css_content_strings(css: str, base_line: int = 1):
+    """Yield (line, value) for every quoted CSS `content:` string in *css*."""
+    for match in _CSS_CONTENT_RE.finditer(css):
+        value = re.sub(r"\\(.)", r"\1", match.group(2))
+        yield css.count("\n", 0, match.start()) + base_line, value
 
 
 def _html_strings(html: str):
@@ -313,6 +323,9 @@ def _html_strings(html: str):
         base_line = html.count("\n", 0, match.start(1)) + 1
         for line, value in js_literals(match.group(1), base_line):
             yield line, value
+    for match in _STYLE_BLOCK_RE.finditer(html):
+        base_line = html.count("\n", 0, match.start(1)) + 1
+        yield from css_content_strings(match.group(1), base_line)
 
 
 # --- Python -------------------------------------------------------------------
