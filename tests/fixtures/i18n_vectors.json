@@ -218,5 +218,53 @@
     },
     "input": "Привет",
     "expected": "Привет"
+  },
+  {
+    "name": "bounded pattern matches inside longer text",
+    "messages": {
+      "确认出现时间": "Confirming appearance times",
+      "· 当前阶段 {0}%": "· stage {0}%",
+      "帧": "frames"
+    },
+    "input": "确认出现时间 · 当前阶段 3% · 16 / 591 帧",
+    "expected": "Confirming appearance times · stage 3% · 16 / 591 frames"
+  },
+  {
+    "name": "adjacent placeholders are ambiguous and skipped",
+    "messages": {
+      "{0}{1}区域": "{0} the {1} area",
+      "调整": "Adjust",
+      "底部字幕": "Bottom subtitles",
+      "区域": "area"
+    },
+    "input": "调整底部字幕区域",
+    "expected": "Adjust Bottom subtitles area"
+  },
+  {
+    "name": "space inserted between touching words",
+    "messages": {
+      "移除": "Remove",
+      "底部字幕": "Bottom subtitles"
+    },
+    "input": "移除底部字幕",
+    "expected": "Remove Bottom subtitles"
+  },
+  {
+    "name": "no space added before punctuation",
+    "messages": {
+      "需留意：": "Attention: ",
+      "水印": "Watermark",
+      "；": "; "
+    },
+    "input": "需留意：水印；水印",
+    "expected": "Attention: Watermark; Watermark"
+  },
+  {
+    "name": "unmatched text with bounded patterns is unchanged",
+    "messages": {
+      "· 当前阶段 {0}%": "· stage {0}%"
+    },
+    "input": "完全未知",
+    "expected": "完全未知"
   }
 ]

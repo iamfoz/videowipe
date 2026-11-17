@@ -373,7 +373,7 @@ def test_index_route_returns_injected_page(monkeypatch):
 def test_dom_translation_headless(tmp_path):
     """A headless browser translates text set after load via MutationObserver."""
     rendered = i18n.render_index(
-        '<!doctype html><html lang="zh-CN"><head></head><body>'
+        '<!doctype html><html lang="zh-CN"><head><title>检测目标</title></head><body>'
         '<header class="topbar"></header>'
         '<p id="static">检测目标</p>'
         '<button id="dyn" type="button"></button>'
@@ -396,6 +396,27 @@ def test_dom_translation_headless(tmp_path):
     () => document.querySelector("#dyn").textContent === "Download the finished video",
     null, {{ timeout: 5000 }}
   );
+  // An element inserted with its attribute already set is translated too.
+  await page.evaluate(() => {{
+    const d = document.createElement("div"); d.id = "box";
+    d.setAttribute("aria-label", "下载成片"); document.body.appendChild(d);
+  }});
+  await page.waitForFunction(
+    () => document.querySelector("#box").getAttribute("aria-label") === "Download the finished video",
+    null, {{ timeout: 5000 }}
+  );
+  // Setting an already-translated text node back to Chinese re-translates it.
+  await page.evaluate(() => {{ document.querySelector("#dyn").firstChild.nodeValue = "选择视频"; }});
+  await page.waitForFunction(
+    () => document.querySelector("#dyn").textContent === "Choose video", null, {{ timeout: 5000 }}
+  );
+  await page.evaluate(() => {{ document.querySelector("#dyn").firstChild.nodeValue = "下载成片"; }});
+  await page.waitForFunction(
+    () => document.querySelector("#dyn").textContent === "Download the finished video",
+    null, {{ timeout: 5000 }}
+  );
+  const title = await page.title();
+  if (title !== "Detect targets") {{ console.error("title", title); process.exit(1); }}
   const placeholder = await page.getAttribute("#ph", "placeholder");
   const selectPresent = await page.$("#videowipe-lang");
   await browser.close();
@@ -406,3 +427,17 @@ def test_dom_translation_headless(tmp_path):
 }})().catch((e) => {{ console.error(e); process.exit(1); }});
 """
     subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+
+
+def test_extra_fragments_are_merged_into_catalogue(tmp_path, monkeypatch):
+    (tmp_path / "xx.json").write_text(
+        json.dumps({"_meta": {"name": "X"}, "messages": {"调整": "Adjust", "区域": ""},
+                    "extra": {"区域": "area", "边缘": "edge"}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(i18n, "_LOCALES_DIR", tmp_path)
+    monkeypatch.setattr(i18n, "_CATALOGUE_CACHE", {})
+    catalogue = i18n.load_catalogue("xx")
+    # An empty extracted entry does not mask a curated extra fragment.
+    assert catalogue == {"调整": "Adjust", "区域": "area", "边缘": "edge"}
+    assert i18n.translate("调整区域", "xx") == "Adjust area"
