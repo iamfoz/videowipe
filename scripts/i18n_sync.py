@@ -425,6 +425,15 @@ def extract_all(root: Path) -> dict[str, tuple[str, int]]:
         for line, value in _html_strings(html):
             add(value, rel, line)
 
+    web = root / "src" / "videowipe" / "web"
+    if web.is_dir():
+        for js_path in sorted(web.glob("*.js")):
+            rel = js_path.relative_to(root).as_posix()
+            if any(fnmatch.fnmatch(rel, pattern) for pattern in ignore["paths"]):
+                continue
+            for line, value in js_literals(js_path.read_text(encoding="utf-8")):
+                add(value, rel, line)
+
     package = root / "src" / "videowipe"
     if package.is_dir():
         for py_path in sorted(package.rglob("*.py")):
