@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 
 from videowipe.errors import InvalidInputError
+from videowipe.video import frame_count as _video_frame_count
 
 SCHEMA_VERSION = 1
 PLAN_KIND = "wipe_plan"
@@ -290,7 +291,7 @@ def compute_source(video_path: str) -> Source:
         # here would make the plan's frame_count one short of STTN's loop bound
         # for non-integer CAP_PROP_FRAME_COUNT, leaving the trailing frame
         # un-inpainted.
-        frame_count = int((cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0) + 0.5)
+        frame_count = _video_frame_count(video_path, cap)
     finally:
         cap.release()
     return Source(
