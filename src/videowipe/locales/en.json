@@ -249,10 +249,14 @@
   "obsolete": {},
   "extra": {
     "区域": "area",
+    "处理约剩 {0} 分钟": "About {0} min left",
+    "处理约剩 {0} 小时": "About {0} hours left",
+    "处理约剩 {0} 秒": "About {0} sec left",
     "处理约剩 {0}–{1} 分钟": "About {0}–{1} min left",
     "处理约剩 {0}–{1} 小时": "About {0}–{1} hours left",
     "处理约剩 {0}–{1} 秒": "About {0}–{1} sec left",
     "已合成 {0} / {1} 帧": "Composited {0} / {1} frames",
+    "当前阶段 {0}%": "Current stage {0}%",
     "设备 {0}": "Device: {0}",
     "输出格式": "Output format",
     "预测 {0} / {1} 帧": "Predicted {0} / {1} frames"
