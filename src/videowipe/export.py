@@ -253,3 +253,23 @@ def inject_ui(html: str) -> str:
     tag = f"<script>{script}</script>\n"
     at = html.lower().rfind("</body>")
     return html[:at] + tag + html[at:] if at != -1 else html + tag
+
+
+def install(app) -> None:
+    """Add the output-format control to the web UI page served at ``/``.
+
+    Registered from ``server/app.py`` with a single line, as an HTTP
+    middleware, so the upstream index route stays untouched."""
+    from starlette.responses import Response
+
+    @app.middleware("http")
+    async def _videowipe_export_ui(request, call_next):
+        response = await call_next(request)
+        if (request.method != "GET" or request.url.path != "/" or response.status_code != 200
+                or not response.headers.get("content-type", "").startswith("text/html")):
+            return response
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        headers = {k: v for k, v in response.headers.items()
+                   if k.lower() not in {"content-length", "etag", "last-modified"}}
+        return Response(inject_ui(body.decode("utf-8")), status_code=200,
+                        headers=headers, media_type="text/html")
