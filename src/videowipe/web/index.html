@@ -77,6 +77,10 @@
     .stage-message { position:absolute; inset:0; background:#131916d9; color:#fff; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:24px; text-align:center; }
     .stage-message strong { font-size:18px; font-weight:600; }
     .stage-message p { max-width:360px; color:#c6d4cb; margin:0; font-size:13px; }
+    #busyHint,#reviewProgress { font-variant-numeric:tabular-nums; }
+    #busyHint { width:min(320px,100%); max-width:none; min-height:calc(5 * 1.6em); line-height:1.6; text-align:left; }
+    #reviewProgress { min-height:calc(5 * 1.7em); }
+    #busyHint span,#reviewProgress span { display:block; }
     .stage-message progress { width:180px; height:5px; accent-color:#7cceab; }
     .playbar { min-height:49px; display:flex; align-items:center; gap:13px; padding:7px 14px; border-bottom:1px solid var(--line); }
     .play { background:transparent; border:0; width:33px; height:32px; font-size:17px; padding:0; }
@@ -617,12 +621,14 @@
       if(data.review_ready&&(!reviewLoaded||(!wasFinal&&finalPlanReady))&&!previewLoading){previewLoading=true;try{await loadPreview(data.id);}finally{previewLoading=false;}}
       $("filename").textContent=data.original_filename||$("filename").textContent;renderActions();
       const phaseNames={upload:"复制视频",plan:"准备检测",prepare:"准备处理",detect:"检测目标",refine:"确认出现时间",persist:"保存计划",inpaint:"修复画面",predict:"计算或复用预测",compose:"从原片重新合成",encode:"编码视频",complete:"已完成",trial:"准备试擦",preview:"等待审阅"};
-      $("busyHint").textContent=(phaseNames[data.phase]||"正在处理")+(data.progress>0?` · 当前阶段 ${Math.round(data.progress*100)}%`:"");
-      if(data.completed&&data.total)$("busyHint").textContent+=` · ${data.completed} / ${data.total}${data.phase==="inpaint"||data.phase==="refine"?" 帧":""}`;
-      if(data.remaining_seconds)$("busyHint").textContent+=` · 处理约剩 ${Math.ceil(data.remaining_seconds[0])}–${Math.ceil(data.remaining_seconds[1])} 秒`;
-      if(data.phase_counts?.predict||data.phase_counts?.compose){const p=data.phase_counts.predict,c=data.phase_counts.compose;$("busyHint").textContent+=(p?` · 预测 ${p[0]}/${p[1]} 帧`:"")+(c?` · 已合成 ${c[0]}/${c[1]} 帧`:"");}
-      if(data.device)$("busyHint").textContent+=` · ${Array.isArray(data.device.device)?data.device.device.join(", "):data.device.device}`;
-      $("reviewProgress").textContent=$("busyHint").textContent;
+      const counts=data.phase_counts||{},num=n=>Number(n).toLocaleString(),lines=[(phaseNames[data.phase]||"正在处理")+(data.progress>0?` · 当前阶段 ${Math.round(data.progress*100)}%`:"")];
+      if(data.remaining_seconds){const [lo,hi]=data.remaining_seconds.map(Math.ceil);lines.push(hi<120?`处理约剩 ${lo}–${hi} 秒`:hi<7200?`处理约剩 ${Math.round(lo/60)}–${Math.round(hi/60)} 分钟`:`处理约剩 ${(lo/3600).toFixed(1)}–${(hi/3600).toFixed(1)} 小时`);}
+      if(data.completed&&data.total&&!counts.predict&&!counts.compose)lines.push(`${num(data.completed)} / ${num(data.total)}${data.phase==="inpaint"||data.phase==="refine"?" 帧":""}`);
+      if(counts.predict)lines.push(`预测 ${num(counts.predict[0])} / ${num(counts.predict[1])} 帧`);
+      if(counts.compose)lines.push(`已合成 ${num(counts.compose[0])} / ${num(counts.compose[1])} 帧`);
+      if(data.device)lines.push(`设备 ${Array.isArray(data.device.device)?data.device.device.join(", "):data.device.device}`);
+      // One element per line: stable layout, and each line is translated on its own.
+      for(const id of ["busyHint","reviewProgress"])$(id).replaceChildren(...lines.map(line=>{const row=document.createElement("span");row.textContent=line;return row;}));
       if(data.conflicts?.length)notify("部分目标的出现证据已变化，请取消这些目标的选择后再试擦。","error");
       if(data.progress>0)$("progress").value=data.progress*100;else $("progress").removeAttribute("value");
       if(data.state==="preview_ready"||data.state==="done"){
