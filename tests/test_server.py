@@ -848,6 +848,11 @@ assert.deepEqual(nodes.busyHint.rows,["从原片重新合成 · 当前阶段 87%
 assert.deepEqual(nodes.reviewProgress.rows,nodes.busyHint.rows);
 await applyStatus({id:"job",state:"running",phase:"refine",progress:0.03,completed:16,total:591,remaining_seconds:[40,52]});
 assert.deepEqual(nodes.busyHint.rows,["确认出现时间 · 当前阶段 3%","处理约剩 40–52 秒","16 / 591 帧"]);
+// An update without an estimate keeps the job's last one in place.
+nodes.busyHint.dataset={};
+await applyStatus({id:"job",state:"running",phase:"refine",progress:0.04,completed:20,total:591,remaining_seconds:[40,52]});
+await applyStatus({id:"job",state:"running",phase:"refine",progress:0.05,completed:24,total:591});
+assert.deepEqual(nodes.busyHint.rows,["确认出现时间 · 当前阶段 5%","处理约剩 40–52 秒","24 / 591 帧"]);
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
     subprocess.run(["node", "-e", harness + "function signature(request) {" + signature

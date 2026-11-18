@@ -622,7 +622,10 @@
       $("filename").textContent=data.original_filename||$("filename").textContent;renderActions();
       const phaseNames={upload:"复制视频",plan:"准备检测",prepare:"准备处理",detect:"检测目标",refine:"确认出现时间",persist:"保存计划",inpaint:"修复画面",predict:"计算或复用预测",compose:"从原片重新合成",encode:"编码视频",complete:"已完成",trial:"准备试擦",preview:"等待审阅"};
       const counts=data.phase_counts||{},num=n=>Number(n).toLocaleString(),lines=[(phaseNames[data.phase]||"正在处理")+(data.progress>0?` · 当前阶段 ${Math.round(data.progress*100)}%`:"")];
-      if(data.remaining_seconds){const [lo,hi]=data.remaining_seconds.map(Math.ceil);lines.push(hi<120?`处理约剩 ${lo}–${hi} 秒`:hi<7200?`处理约剩 ${Math.round(lo/60)}–${Math.round(hi/60)} 分钟`:`处理约剩 ${(lo/3600).toFixed(1)}–${(hi/3600).toFixed(1)} 小时`);}
+      // Estimates arrive only on some updates: keep the job's last one so the lines below do not hop.
+      const hint=$("busyHint").dataset||{};if(hint.remainingJob!==data.id)Object.assign(hint,{remainingJob:data.id,remaining:""});
+      if(data.remaining_seconds){const [lo,hi]=data.remaining_seconds.map(Math.ceil);hint.remaining=hi<120?`处理约剩 ${lo}–${hi} 秒`:hi<7200?`处理约剩 ${Math.round(lo/60)}–${Math.round(hi/60)} 分钟`:`处理约剩 ${(lo/3600).toFixed(1)}–${(hi/3600).toFixed(1)} 小时`;}
+      if(hint.remaining&&["running","trial_running","pending","cancelling"].includes(data.state))lines.push(hint.remaining);
       if(data.completed&&data.total&&!counts.predict&&!counts.compose)lines.push(`${num(data.completed)} / ${num(data.total)}${data.phase==="inpaint"||data.phase==="refine"?" 帧":""}`);
       if(counts.predict)lines.push(`预测 ${num(counts.predict[0])} / ${num(counts.predict[1])} 帧`);
       if(counts.compose)lines.push(`已合成 ${num(counts.compose[0])} / ${num(counts.compose[1])} 帧`);
