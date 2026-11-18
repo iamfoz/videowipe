@@ -815,7 +815,8 @@ def test_workspace_recommendation_and_stale_trial_state():
     harness = r'''
 const assert = require("node:assert/strict");
 const nodes = {start:{value:0},duration:{value:3}};
-const $ = id => nodes[id] ||= {classList:{},removeAttribute(){}};
+const $ = id => nodes[id] ||= {classList:{},removeAttribute(){},replaceChildren(...rows){this.rows=rows.map(r=>r.textContent);}};
+const document = {createElement:()=>({})};
 const source = {fps:25,frame_count:500};
 const duration = () => 20;
 let mask=true; const bboxDrafts={};
@@ -840,6 +841,13 @@ assert.deepEqual(events,["closed","preview"]);assert.equal(trial,null);
 events=[];await applyStatus({id:"job",state:"done"});assert.deepEqual(events,["closed","done"]);
 events=[];await applyStatus({id:"job",state:"preview_ready",error:"encode failure"});
 assert.equal(state,"preview_ready");assert.equal(trial,null);assert(events[1].includes("可以重试"));
+events=[];await applyStatus({id:"job",state:"running",phase:"compose",progress:0.87,completed:61100,total:70199,
+  remaining_seconds:[1514,1666],phase_counts:{predict:[61100,70199],compose:[61100,70199]},device:{device:"mps"}});
+assert.deepEqual(nodes.busyHint.rows,["从原片重新合成 · 当前阶段 87%","处理约剩 25–28 分钟",
+  "预测 61,100 / 70,199 帧","已合成 61,100 / 70,199 帧","设备 mps"]);
+assert.deepEqual(nodes.reviewProgress.rows,nodes.busyHint.rows);
+await applyStatus({id:"job",state:"running",phase:"refine",progress:0.03,completed:16,total:591,remaining_seconds:[40,52]});
+assert.deepEqual(nodes.busyHint.rows,["确认出现时间 · 当前阶段 3%","处理约剩 40–52 秒","16 / 591 帧"]);
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
     subprocess.run(["node", "-e", harness + "function signature(request) {" + signature
