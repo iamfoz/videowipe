@@ -480,7 +480,8 @@ def _existing_extra(path: Path) -> dict:
     return {k: extra[k] for k in sorted(extra)} if isinstance(extra, dict) else {}
 
 
-def write_catalogue(path: Path, language: str, name: str, messages: dict, obsolete: dict) -> None:
+def write_catalogue(path: Path, language: str, name: str, messages: dict, obsolete: dict,
+                    extra: dict | None = None) -> None:
     doc = {
         "_meta": {
             "language": language,
@@ -490,7 +491,7 @@ def write_catalogue(path: Path, language: str, name: str, messages: dict, obsole
         "messages": {k: messages[k] for k in sorted(messages)},
         "obsolete": {k: obsolete[k] for k in sorted(obsolete)},
     }
-    extra = _existing_extra(path)
+    extra = _existing_extra(path) if extra is None else {k: extra[k] for k in sorted(extra)}
     if extra:
         doc["extra"] = extra
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -547,24 +548,27 @@ def run_update(args) -> int:
     changed = 0
     for path in _locale_paths(root):
         meta, messages, obsolete = load_catalogue(path)
+        extra = _existing_extra(path)
         new_messages: dict = {}
         for key in entries:
             if key in messages:
                 new_messages[key] = messages[key]
             elif key in obsolete:
                 new_messages[key] = obsolete.pop(key)  # string reappeared: restore
+            elif extra.get(key):
+                new_messages[key] = extra.pop(key)  # pre-translated: adopt it
             else:
                 new_messages[key] = ""  # new upstream string: untranslated
         for key in list(messages):
             if key not in entries:
                 obsolete.setdefault(key, messages.pop(key))  # no longer found upstream
-        changed_now = _write_if_changed(path, meta, new_messages, obsolete)
+        changed_now = _write_if_changed(path, meta, new_messages, obsolete, extra)
         changed += changed_now
         print(("updated " if changed_now else "unchanged ") + path.relative_to(root).as_posix())
     return 0
 
 
-def _write_if_changed(path, meta, messages, obsolete) -> bool:
+def _write_if_changed(path, meta, messages, obsolete, extra=None) -> bool:
     before = path.read_text(encoding="utf-8") if path.is_file() else None
     doc = {
         "_meta": {
@@ -575,13 +579,13 @@ def _write_if_changed(path, meta, messages, obsolete) -> bool:
         "messages": {k: messages[k] for k in sorted(messages)},
         "obsolete": {k: obsolete[k] for k in sorted(obsolete)},
     }
-    extra = _existing_extra(path)
+    extra = _existing_extra(path) if extra is None else {k: extra[k] for k in sorted(extra)}
     if extra:
         doc["extra"] = extra
     after = json.dumps(doc, ensure_ascii=False, indent=2) + "\n"
     if before == after:
         return False
-    write_catalogue(path, meta.get("language", path.stem), meta.get("name", path.stem), messages, obsolete)
+    write_catalogue(path, meta.get("language", path.stem), meta.get("name", path.stem), messages, obsolete, extra)
     return True
 
 

@@ -515,3 +515,21 @@ def test_css_content_strings_are_extracted():
     values = [v for _, v in mod._html_strings(html)]
     assert "正在定位画面…" in values
     assert "左'右" in values
+
+
+def test_update_adopts_pre_translated_extra_when_string_appears(tmp_path):
+    path = _make_root(
+        tmp_path,
+        "<html><body><p>仍存在的串</p><p>新出现的串</p></body></html>",
+        locale={
+            "_meta": {"language": "en", "name": "English", "source_language": "zh-CN"},
+            "messages": {"仍存在的串": "Still here"},
+            "obsolete": {},
+            "extra": {"新出现的串": "Newly arrived", "区域": "area"},
+        },
+    )
+    assert mod.run_update(_ns(tmp_path)) == 0
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["messages"]["新出现的串"] == "Newly arrived"
+    assert doc["extra"] == {"区域": "area"}
+    assert mod.run_check(_ns(tmp_path)) == 0
