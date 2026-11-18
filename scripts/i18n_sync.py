@@ -598,7 +598,8 @@ def run_check(args) -> int:
     for path in _locale_paths(root):
         meta, messages, obsolete = load_catalogue(path)
         rel = path.relative_to(root).as_posix()
-        untranslated = sorted(k for k in entries if not messages.get(k))
+        extra = _existing_extra(path)  # pre-translated entries also count
+        untranslated = sorted(k for k in entries if not messages.get(k) and not extra.get(k))
         # Only translated (non-empty) values can drift from their key's
         # placeholders; empty values are simply untranslated.
         mismatches = [

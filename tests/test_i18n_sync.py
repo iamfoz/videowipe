@@ -533,3 +533,17 @@ def test_update_adopts_pre_translated_extra_when_string_appears(tmp_path):
     assert doc["messages"]["新出现的串"] == "Newly arrived"
     assert doc["extra"] == {"区域": "area"}
     assert mod.run_check(_ns(tmp_path)) == 0
+
+
+def test_check_counts_extra_translations_as_covered(tmp_path):
+    _make_root(
+        tmp_path,
+        "<html><body><p>新出现的串</p></body></html>",
+        locale={
+            "_meta": {"language": "en", "name": "English", "source_language": "zh-CN"},
+            "messages": {"新出现的串": ""},
+            "obsolete": {},
+            "extra": {"新出现的串": "Newly arrived"},
+        },
+    )
+    assert mod.run_check(_ns(tmp_path)) == 0
