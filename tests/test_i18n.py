@@ -446,3 +446,48 @@ def test_extra_fragments_are_merged_into_catalogue(tmp_path, monkeypatch):
     # An empty extracted entry does not mask a curated extra fragment.
     assert catalogue == {"调整": "Adjust", "区域": "area", "边缘": "edge"}
     assert i18n.translate("调整区域", "xx") == "Adjust area"
+
+
+def _patch_catalogue(monkeypatch, tmp_path, messages):
+    (tmp_path / "en.json").write_text(json.dumps({"_meta": {"name": "English"}, "messages": messages},
+                                                 ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(i18n, "_LOCALES_DIR", tmp_path)
+    monkeypatch.setattr(i18n, "_CATALOGUE_CACHE", {})
+
+
+def test_translate_message_whole_messages_only(tmp_path, monkeypatch):
+    _patch_catalogue(monkeypatch, tmp_path, {"没有需要处理的区域": "No areas to process",
+                                            "字幕": "Subtitles", "找不到 {0}": "Cannot find {0}"})
+    assert i18n.translate_message("没有需要处理的区域", "en") == "No areas to process"
+    assert i18n.translate_message("videowipe: 没有需要处理的区域", "en") == "videowipe: No areas to process"
+    assert i18n.translate_message("找不到 a.mp4", "en") == "Cannot find a.mp4"
+    # A file name that happens to contain a known word is never rewritten.
+    assert i18n.translate_message("Saved to /x/字幕_clean.mp4", "en") == "Saved to /x/字幕_clean.mp4"
+    assert i18n.translate_message("没有需要处理的区域", "zh-CN") == "没有需要处理的区域"
+
+
+def test_cli_wrapper_translates_stderr(tmp_path, monkeypatch, capsys):
+    import sys
+
+    from videowipe import cli, i18n_cli
+
+    _patch_catalogue(monkeypatch, tmp_path, {"没有需要处理的区域": "No areas to process"})
+    monkeypatch.setenv("VIDEOWIPE_LANG", "en")
+
+    def fake_main():
+        print("videowipe: 没有需要处理的区域", file=sys.stderr)
+        print("Saved to /x/字幕.mp4", file=sys.stderr)
+        sys.exit(1)
+
+    monkeypatch.setattr(cli, "main", fake_main)
+    with pytest.raises(SystemExit):
+        i18n_cli.main()
+    err = capsys.readouterr().err
+    assert err == "videowipe: No areas to process\nSaved to /x/字幕.mp4\n"
+
+
+def test_upstream_cli_untouched_and_entry_point_wraps_it():
+    from pathlib import Path
+
+    pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+    assert 'videowipe = "videowipe.i18n_cli:main"' in pyproject

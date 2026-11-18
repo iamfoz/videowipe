@@ -76,7 +76,7 @@ all = [
 dev = ["pytest", "ruff", "build", "httpx2>=2,<3"]
 
 [project.scripts]
-videowipe = "videowipe.cli:main"
+videowipe = "videowipe.i18n_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/videowipe"]

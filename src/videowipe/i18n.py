@@ -341,3 +341,52 @@ _I18N_JS_PATH = Path(__file__).resolve().parent / "web" / "i18n.js"
 
 def _read_i18n_js() -> str:
     return _I18N_JS_PATH.read_text(encoding="utf-8")
+
+
+def translate_message(text: str, lang: str | None = None) -> str:
+    """Translate a complete message (CLI output): exact or pattern matches
+    only, never fragments, so file names and paths are never rewritten.
+    A leading ``prefix: `` (e.g. ``videowipe: ``) is kept as is."""
+    code = lang if lang is not None else resolve_language()
+    if not text or code == SOURCE_LANGUAGE or _CJK.search(text) is None:
+        return text
+    messages = load_catalogue(code)
+    if not messages:
+        return text
+    match = re.match(r"^(\s*)(.*?)(\s*)$", text, re.DOTALL)
+    leading, core, trailing = match.group(1), match.group(2), match.group(3)
+    candidates = [("", core)]
+    prefixed = re.match(r"^([\w.-]+: )(.+)$", core, re.DOTALL)
+    if prefixed:
+        candidates.append((prefixed.group(1), prefixed.group(2)))
+    for prefix, body in candidates:
+        if messages.get(body):
+            return leading + prefix + messages[body] + trailing
+        for key, value in messages.items():
+            if value and _is_pattern_key(key) and not _is_ambiguous(key):
+                regex, number_to_group = _build_pattern(key)
+                found = regex.match(body)
+                if found:
+                    return leading + prefix + _apply_value(
+                        value, found, number_to_group, messages, 0) + trailing
+    return text
+
+
+def install(app) -> None:
+    """Inject the i18n runtime into the web UI page served at ``/``.
+
+    Registered from ``server/app.py`` with a single line, as an HTTP
+    middleware, so the upstream index route stays untouched."""
+    from starlette.responses import Response
+
+    @app.middleware("http")
+    async def _videowipe_i18n(request, call_next):
+        response = await call_next(request)
+        if (request.method != "GET" or request.url.path != "/" or response.status_code != 200
+                or not response.headers.get("content-type", "").startswith("text/html")):
+            return response
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        headers = {k: v for k, v in response.headers.items()
+                   if k.lower() not in {"content-length", "etag", "last-modified"}}
+        return Response(render_index(body.decode("utf-8")), status_code=200,
+                        headers=headers, media_type="text/html")

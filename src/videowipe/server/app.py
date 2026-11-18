@@ -19,14 +19,13 @@ from contextlib import asynccontextmanager, contextmanager
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field, StrictInt
 
 from videowipe.api import CancellationToken, ProgressEvent, WipeRequest
 from videowipe.engine import WipeEngine
 from videowipe.errors import InvalidInputError, ProcessingCancelledError
-from videowipe.i18n import render_index
 from videowipe.plan import (
     JSON_FILENAME,
     load_wipe_plan,
@@ -63,6 +62,8 @@ async def _lifespan(_app):
 
 
 app = FastAPI(title="videowipe", lifespan=_lifespan)
+from videowipe import i18n as _i18n  # noqa: E402  fork: translate the web UI (docs/i18n.md)
+_i18n.install(app)
 
 _engine: WipeEngine | None = None
 _engine_lock = threading.Lock()
@@ -446,7 +447,7 @@ def clear_prediction_cache(job_id: str):
 
 @app.get("/")
 def index():
-    return HTMLResponse(render_index(_web_index().read_text(encoding="utf-8")))
+    return FileResponse(_web_index())
 
 
 @app.post("/jobs")
