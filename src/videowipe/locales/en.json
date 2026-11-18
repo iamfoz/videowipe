@@ -232,7 +232,6 @@
     "调整{0} {1} 边缘": "Adjust the {0} {1} edge",
     "调整区域框": "Adjust the area box",
     "调整试擦时间": "Adjust trial-wipe time",
-    "输出格式": "Output format",
     "这段效果满意吗？": "Happy with the result?",
     "选择本地视频": "Choose a local video",
     "选择本地视频，确认目标后试擦一小段。原视频始终保留。": "Choose a local video, confirm the targets, then trial-wipe a short section. Your original video is always kept.",
@@ -249,6 +248,13 @@
   },
   "obsolete": {},
   "extra": {
-    "区域": "area"
+    "区域": "area",
+    "处理约剩 {0}–{1} 分钟": "About {0}–{1} min left",
+    "处理约剩 {0}–{1} 小时": "About {0}–{1} hours left",
+    "处理约剩 {0}–{1} 秒": "About {0}–{1} sec left",
+    "已合成 {0} / {1} 帧": "Composited {0} / {1} frames",
+    "设备 {0}": "Device: {0}",
+    "输出格式": "Output format",
+    "预测 {0} / {1} 帧": "Predicted {0} / {1} frames"
   }
 }
