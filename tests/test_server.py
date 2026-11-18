@@ -843,16 +843,18 @@ events=[];await applyStatus({id:"job",state:"preview_ready",error:"encode failur
 assert.equal(state,"preview_ready");assert.equal(trial,null);assert(events[1].includes("可以重试"));
 events=[];await applyStatus({id:"job",state:"running",phase:"compose",progress:0.87,completed:61100,total:70199,
   remaining_seconds:[1514,1666],phase_counts:{predict:[61100,70199],compose:[61100,70199]},device:{device:"mps"}});
-assert.deepEqual(nodes.busyHint.rows,["从原片重新合成 · 当前阶段 87%","处理约剩 25–28 分钟",
+assert.deepEqual(nodes.busyHint.rows,["从原片重新合成","当前阶段 87%","处理约剩 25–28 分钟",
   "预测 61,100 / 70,199 帧","已合成 61,100 / 70,199 帧","设备 mps"]);
 assert.deepEqual(nodes.reviewProgress.rows,nodes.busyHint.rows);
 await applyStatus({id:"job",state:"running",phase:"refine",progress:0.03,completed:16,total:591,remaining_seconds:[40,52]});
-assert.deepEqual(nodes.busyHint.rows,["确认出现时间 · 当前阶段 3%","处理约剩 40–52 秒","16 / 591 帧"]);
+assert.deepEqual(nodes.busyHint.rows,["确认出现时间","当前阶段 3%","处理约剩 40–52 秒","16 / 591 帧"]);
 // An update without an estimate keeps the job's last one in place.
 nodes.busyHint.dataset={};
 await applyStatus({id:"job",state:"running",phase:"refine",progress:0.04,completed:20,total:591,remaining_seconds:[40,52]});
 await applyStatus({id:"job",state:"running",phase:"refine",progress:0.05,completed:24,total:591});
-assert.deepEqual(nodes.busyHint.rows,["确认出现时间 · 当前阶段 5%","处理约剩 40–52 秒","24 / 591 帧"]);
+assert.deepEqual(nodes.busyHint.rows,["确认出现时间","当前阶段 5%","处理约剩 40–52 秒","24 / 591 帧"]);
+await applyStatus({id:"job",state:"running",phase:"compose",progress:0.2,remaining_seconds:[530,545]});
+assert.equal(nodes.busyHint.rows[2],"处理约剩 9 分钟");
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
     subprocess.run(["node", "-e", harness + "function signature(request) {" + signature
