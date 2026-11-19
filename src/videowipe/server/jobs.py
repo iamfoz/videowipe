@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import json
-import hashlib
 import math
 import re
 import threading
@@ -14,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 from videowipe.api import CancellationToken
-from videowipe.plan import load_wipe_plan
+from videowipe.plan import _sha256_file, load_wipe_plan
 
 JobState = Literal["pending", "preview_ready", "running", "trial_running", "done", "error", "cancelled", "cancelling", "interrupted"]
 
@@ -138,11 +137,7 @@ class Job:
 
 
 def source_hash(path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return _sha256_file(path)
 
 
 def relative_path(root, value) -> str:
