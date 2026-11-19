@@ -724,7 +724,7 @@ and output video are byte-identical to upstream's.
 | P2-3(b) recovery pre-gate | — | **Not built.** A brightness gate separated hits from misses on the three real samples but would have discarded 12 genuine recoveries on synthetic fades to black and mid-grey dissolves — the cases recovery exists for. No statistic separated all 275 recorded recoveries with a margin. |
 | P2-6 blend inside the mask's box | `perf/blend-box` (on `perf/instrumentation`) | Done, byte-identical pipe output. Blend time in a real clean fell from 2.2 s to 0.2–0.3 s on the Linux test machine (the reference Mac spent 6.3 s). Cropped upscaling is used only where a rounding argument and an on-machine check both agree; `VIDEOWIPE_BLEND_WINDOW_RESIZE=off` disables it. |
 | P2-2 skip model windows | `perf/skip-windows` (on `perf/blend-box`) | Done, exact. A window runs only if a frame it predicts reaches an emitted pixel in that band; a frame is returned only when every window covering it ran, so no partly averaged frame is used or cached. A cache entry may hold only some frames and satisfies a band only when it holds every frame needed; missing frames are computed and merged in. `VIDEOWIPE_SKIP_WINDOWS=off` restores the old behaviour. **Saving on the samples is small** (see below). |
-| Recovery reuse | `perf/recovery-reuse` (on `perf/detector-calls`) | Done, exact. Boundary probes repeat recovery calls refine already made (same frame, same box); a per-run memo keyed on crop pixels, box, frame size and detector state answers them. 6–8% of planning's detector calls on two samples, under 1% on the third. `VIDEOWIPE_RECOVERY_REUSE=off` disables it. |
+| Recovery reuse | `perf/recovery-reuse` (on `perf/detector-calls`) | Done, exact. Boundary probes repeat recovery calls refine already made (same frame, same box); a per-run memo keyed on crop pixels, box, frame size and detector state answers them. 6–8% of planning's detector calls on two samples, under 1% on the third; on the reference Mac boundary probes run 2.5–2.9 s faster on those two (see below). `VIDEOWIPE_RECOVERY_REUSE=off` disables it. |
 | P2-3(c) cheaper crop inputs | — | **Measured, not built.** 10–15× faster per recovery call, but it changes plans on two of three samples and loses real recoveries. See below. |
 
 **P2-1 result on the reference Mac** (M2 Pro, torch 2.15, `chinese1.mp4`,
@@ -810,10 +810,36 @@ already tried with the same box, always after an empty answer (a refine hit
 adds evidence and the probe then skips the frame). A one-entry "previous
 frame" memo would have caught 3 of 27, so the memo is keyed. Whole-frame
 detection is never repeated. Plans and masks are byte-identical with the memo
-on and off on all three clips. Expected planning saving is roughly the same
-share of detector time (about 3 s of 41 s on `chinese1` on the reference Mac);
-**not yet measured there**. `refine_review` is covered by tests with stubs
+on and off on all three clips. `refine_review` is covered by tests with stubs
 only.
+
+Measured on the reference Mac (M2 Pro, torch 2.15 on MPS, float32, planning
+only, median of 3 runs, `VIDEOWIPE_RECOVERY_REUSE` on against `off` on the
+same branch):
+
+| Clip | Forward passes off → on | Boundary probe off → on | Refine off → on | Planning off → on |
+|---|---|---|---|---|
+| `chinese1.mp4` | 921 → 851 (−70, 7.6%) | 8.83 s → 5.93 s (−2.90 s) | 25.02 s → 26.57 s (same 568 calls) | 41.71 s → 40.51 s (−1.20 s, −2.9%) |
+| `english1.mp4` | 1,134 → 1,062 (−72, 6.3%) | 6.28 s → 3.76 s (−2.52 s) | 35.35 s → 33.97 s (835 → 823 calls) | 49.00 s → 44.85 s (−4.15 s, −8.5%) |
+
+The boundary-probe saving is the reliable figure: about 2.5–2.9 s a clip, or
+41–42 ms for each detector call avoided, steady to within 0.16 s across the
+three runs of each setting. It matches the estimate (about 3 s on
+`chinese1`). The whole-planning figures are less clean because refine moved
+by more than its work explains: on `chinese1` refine did identical work in
+both settings (568 calls) yet took 26.81, 25.01 and 26.57 s with the memo on
+against 24.74, 25.11 and 25.02 s with it off, which hides 1.5 s of the saving
+in the median; on `english1` refine was 1.4 s faster for 12 fewer calls
+(about 0.5 s expected). This is taken to be run-to-run variation, not memo
+overhead, because one "on" run matches the "off" runs and `english1` moves
+the other way; that reading is not proven. No run was disturbed in the way
+seen in the skip-windows measurement. Every counter other than the detector
+calls saved (frames converted, recovery frames and calls, recovery hits,
+frames found present) is identical on and off, as an exact change requires.
+`english1` shows one detector call fewer here than in the probe table above
+(1,134 and 72 saved against 1,135 and 73, counted on the Linux test machine);
+the difference was not investigated. `others.mp4` was not timed (6 calls,
+about 0.25 s expected).
 
 **P2-3(c), measured and not built.** Sizing recovery's detector input by the
 full-frame scale factor (for the `chinese1` band, about 1664×256 → 256×64)

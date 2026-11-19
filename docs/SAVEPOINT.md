@@ -50,8 +50,9 @@ Apple M2 Pro, 12 cores, 32 GB, torch 2.15 on MPS. Clip `chinese1.mp4` (1080p,
 
 - Whole run 135.5 s → 127.5 s after Phases 1 and 2 (−5.9%); 120.1 s with
   skip windows as well.
-- Blend 6.30 s → 0.74 s. Planning 44.2 s → 41.5 s. Model inference unchanged
-  at ~80 s (136 ms a frame) and now 63% of the run.
+- Blend 6.30 s → 0.74 s. Planning 44.2 s → 41.5 s. With recovery reuse as
+  well, planning is 40.5 s (boundary probes 8.8 s → 5.9 s). Model inference
+  unchanged at ~80 s (136 ms a frame) and now 63% of the run.
 - Half precision on MPS: 1.4% faster and failed the output gate. **Not
   adopted; `auto` stays float32 on MPS.** The setting remains for later chips.
 - Long file (1080p AV1, 70,819 frames), planning only: 102 s, all of it two
@@ -67,23 +68,25 @@ the PRD's Phase 2 status.
    on the samples (windows saved: 10.9%, 1.0%, 0.0%). It pays on sparse text,
    trials and partly cached re-runs.
 2. **Recovery reuse** (`perf/recovery-reuse`): exact; 6–8% of planning's
-   detector calls on two samples, under 1% on the third. P2-3(c) (cheaper
+   detector calls on two samples, under 1% on the third. Timed on the
+   reference Mac: 2.5–2.9 s off boundary probes on those two. P2-3(c) (cheaper
    crop inputs) was measured and not built: 10–15× faster per call but it
    changes plans and loses real recoveries.
 
 Skip windows is measured on the reference Mac: `chinese1` model inference
 79.98 s → 70.96 s (−11.3%), whole run 129.66 s → 120.09 s; nothing
 measurable on the other two; output byte-identical on MPS with the switch on
-and off. **Recovery reuse is not yet timed on the Mac** (expected about 3 s of
-planning on `chinese1`):
+and off.
 
-```
-python scripts/perf_baseline.py CLIP -o OUT/on --runs 3 --no-full
-VIDEOWIPE_RECOVERY_REUSE=off python scripts/perf_baseline.py CLIP -o OUT/off --runs 3 --no-full
-```
-
-on `perf/recovery-reuse`. Watch for disturbed runs: three of nine runs in the
-skip-windows measurement were about 2.1× slower with identical work.
+Recovery reuse is measured on the reference Mac too (planning only, median of
+three runs, on against `VIDEOWIPE_RECOVERY_REUSE=off`): boundary probes
+8.83 s → 5.93 s on `chinese1` and 6.28 s → 3.76 s on `english1`, about 41 ms
+for each of the 70 and 72 detector calls avoided, as estimated. Whole
+planning 41.71 s → 40.51 s (`chinese1`) and 49.00 s → 44.85 s (`english1`);
+those two are blurred by refine varying about 1.5 s between runs with
+identical work, so quote the boundary-probe figure. All other counters are
+identical on and off. No disturbed runs. Nothing from Phases 1 and 2 is left
+to measure except the long-file planning re-run noted above.
 
 Not started: Phase 3 of the PRD (output fidelity: variable-frame-rate timing,
 audio copy, metadata and chapters, colour tags, 10-bit/HDR, the OCR
