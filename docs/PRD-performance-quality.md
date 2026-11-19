@@ -678,7 +678,8 @@ One branch per group, each from upstream, each independently mergeable (C5).
 | 7 | `fix/output-fidelity` | Q-1 (minimum), Q-2, Q-4 (warning), Q-10 | ffprobe comparisons |
 | 8 | `fix/ocr-crop` | Q-5 | decision baseline |
 | 9 | `feat/duration-sampling` | Q-6 | ground-truth clip + baselines |
-| 10 | later | P2-2, P2-5, P2-6, P2-7, Q-3, Q-7…Q-9, U-1…U-4 | as stated |
+| 10 | `perf/skip-windows`, `perf/recovery-reuse` | P2-2, recovery reuse (done) | equality tests |
+| 11 | later | P2-5, P2-7, Q-3, Q-7…Q-9, U-1…U-4 | as stated |
 
 Steps 2–4 are safe to start immediately after step 1; nothing in them changes
 results. Steps 5, 6 and 9 must not be merged without their gate numbers.
@@ -722,6 +723,9 @@ and output video are byte-identical to upstream's.
 | P2-3(a) recovery pruning | `perf/detector-calls` | Done, exact for returned boxes. Only the sixth variant is provably redundant: 33 of 954 detector calls on the reference clip (3%). A detector error that only that call would raise is no longer seen. |
 | P2-3(b) recovery pre-gate | — | **Not built.** A brightness gate separated hits from misses on the three real samples but would have discarded 12 genuine recoveries on synthetic fades to black and mid-grey dissolves — the cases recovery exists for. No statistic separated all 275 recorded recoveries with a margin. |
 | P2-6 blend inside the mask's box | `perf/blend-box` (on `perf/instrumentation`) | Done, byte-identical pipe output. Blend time in a real clean fell from 2.2 s to 0.2–0.3 s on the Linux test machine (the reference Mac spent 6.3 s). Cropped upscaling is used only where a rounding argument and an on-machine check both agree; `VIDEOWIPE_BLEND_WINDOW_RESIZE=off` disables it. |
+| P2-2 skip model windows | `perf/skip-windows` (on `perf/blend-box`) | Done, exact. A window runs only if a frame it predicts reaches an emitted pixel in that band; a frame is returned only when every window covering it ran, so no partly averaged frame is used or cached. A cache entry may hold only some frames and satisfies a band only when it holds every frame needed; missing frames are computed and merged in. `VIDEOWIPE_SKIP_WINDOWS=off` restores the old behaviour. **Saving on the samples is small** (see below). |
+| Recovery reuse | `perf/recovery-reuse` (on `perf/detector-calls`) | Done, exact. Boundary probes repeat recovery calls refine already made (same frame, same box); a per-run memo keyed on crop pixels, box, frame size and detector state answers them. 6–8% of planning's detector calls on two samples, under 1% on the third. `VIDEOWIPE_RECOVERY_REUSE=off` disables it. |
+| P2-3(c) cheaper crop inputs | — | **Measured, not built.** 10–15× faster per recovery call, but it changes plans on two of three samples and loses real recoveries. See below. |
 
 **P2-1 result on the reference Mac** (M2 Pro, torch 2.15, `chinese1.mp4`,
 median of 3 runs each; the float16 run used MPS autocast and passed the
@@ -755,16 +759,64 @@ against the §4 baseline):
 | Model inference | 81.05 s | 80.38 s | unchanged |
 
 Model inference is now 63% of the run and unchanged at 136 ms a frame. The
-remaining levers on it are P2-2 (skip windows that cannot matter; exact,
-workload-dependent) and fewer overlapping windows (faster, but changes
+remaining levers on it are P2-2 (now built; small on these clips, see below)
+and fewer overlapping windows (faster, but changes
 output; opt-in only). The long-file planning re-run (expected to drop the
 58 s band-fallback pass) is still to be recorded.
 
-Recovery remains about a third of detector calls in refine and probes on the
-reference clip. Candidates that do not need a gate: cheaper crop inputs
-(P2-3(c), behaviour-changing, needs baselines) and skipping a recovery whose
-band crop is bit-identical to the previous frame's after a negative result
-(exact).
+**P2-2 result** (window counts from real plans, `scripts/skip_windows_estimate.py`;
+exact and machine-independent; model time is at most proportional):
+
+| Clip | Band-segments | Windows before | Windows now | Saved |
+|---|---|---|---|---|
+| `chinese1.mp4` | 24 | 119 | 106 | 10.9% |
+| `english1.mp4` | 20 | 100 | 99 | 1.0% |
+| `others.mp4` | 21 | 104 | 104 | 0.0% |
+
+Subtitles are on screen almost throughout these clips, so nearly every window
+touches a needed frame. The change pays on sparse text, on trial ranges that
+do not fill their edge segments, and on re-runs over a partly filled cache;
+on dense dialogue it is negligible. Proven against the original
+`_process_segment` embedded as an oracle and by an end-to-end clean (4 of 30
+windows skipped on the 6-second clip, output byte-identical to upstream's).
+Verified with ONNX on CPU only; time saved on MPS, and byte identity there
+with the switch on and off, are **not yet measured on the reference Mac**.
+Each plan here has one inpainting band, although §4 describes `chinese1` as
+having two active bands; unresolved.
+
+**Recovery reuse result** (`scripts/recovery_reuse_probe.py`, counts exact):
+
+| Clip | Planning detector calls | Recovery calls (detector calls inside) | Repeats | Detector calls saved |
+|---|---|---|---|---|
+| `chinese1.mp4` | 921 | 51 (273) | 13 | 70 (7.6%) |
+| `english1.mp4` | 1,135 | 93 (541) | 13 | 73 (6.4%) |
+| `others.mp4` | 784 | 28 (168) | 1 | 6 (0.8%) |
+
+24 of the 27 repeats are boundary probes asking about a gap frame refine had
+already tried with the same box, always after an empty answer (a refine hit
+adds evidence and the probe then skips the frame). A one-entry "previous
+frame" memo would have caught 3 of 27, so the memo is keyed. Whole-frame
+detection is never repeated. Plans and masks are byte-identical with the memo
+on and off on all three clips. Expected planning saving is roughly the same
+share of detector time (about 3 s of 41 s on `chinese1` on the reference Mac);
+**not yet measured there**. `refine_review` is covered by tests with stubs
+only.
+
+**P2-3(c), measured and not built.** Sizing recovery's detector input by the
+full-frame scale factor (for the `chinese1` band, about 1664×256 → 256×64)
+makes each recovery detector call 10–15× faster on the test CPU. It changes
+results: `chinese1` unchanged (no hits either way); `english1` keeps all 57
+hits but with different boxes on 57 frames; `others` loses 8 of 28 hits, so a
+track loses 8 removal frames. On 183 synthetic fades and dissolves where
+normal detection fails, the fixed budget recovered 178 and the scaled input
+181 (2 lost, 5 gained). Fact baseline: region Jaccard 0.3203 → 0.3190,
+boundary F 0.4583 → 0.4537, false-removal area 0.0105 → 0.0049; decision
+baseline unchanged. Not adopted as is; a variant that falls back to the full
+input when the scaled pass finds nothing might keep the hits and most of the
+speed, and would need its own evaluation.
+
+Still open in recovery: per-variant reuse (blank or saturated variants repeat
+across frames; a little more than the above) — not built.
 
 ## 14. Open questions
 

@@ -13,8 +13,9 @@ vendored Switchyard MCP servers in `.switchyard-mcp/`).
 ## Branches
 
 Every branch starts from upstream `20872d4` unless marked as stacked. Any
-combination merges without conflicts (66 of 66 pairs checked), and with all
-of them merged the suite passes (1,020 tests) and an end-to-end clean is
+combination merges without conflicts (66 of 66 pairs checked earlier; the two
+newest branches checked against every other and each other), and with all of
+them merged the suite passes (1,107 tests) and an end-to-end clean is
 byte-identical to upstream's output.
 
 | Branch | Head | Contents |
@@ -30,6 +31,8 @@ byte-identical to upstream's output.
 | `perf/instrumentation` | `f805b92` | **Stacked on `perf/refine-exact`.** Split timers, detection counters (`perfstats.py`), `scripts/perf_baseline.py` |
 | `perf/detector-calls` | `1e37cb5` | **Stacked on `perf/instrumentation`.** Band fallback from stored crops (no second decode), recovery pruning |
 | `perf/blend-box` | `4133f14` | **Stacked on `perf/instrumentation`.** Compositing only inside the mask's box |
+| `perf/skip-windows` | `8c451f7` | **Stacked on `perf/blend-box`.** Model windows that cannot reach an emitted pixel are skipped; partial prediction-cache entries; `scripts/skip_windows_estimate.py` |
+| `perf/recovery-reuse` | `fa4503c` | **Stacked on `perf/detector-calls`.** Per-run memo for repeated contrast-recovery calls; `scripts/recovery_reuse_probe.py` |
 | `docs/performance-prd` | this branch | The PRD and this file |
 | `chore/switchyard-mcp` | `f1d326d` | Merged to `main`; can be deleted |
 | `iamfoz/beautiful-ramanujan-cw1ggy` | `f9b21f3` | Stale early branch; the owner should delete it (a cloud session cannot) |
@@ -51,24 +54,32 @@ Apple M2 Pro, 12 cores, 32 GB, torch 2.15 on MPS. Clip `chinese1.mp4` (1080p,
   decode passes. The band-fallback pass (58 s) should now be gone; **the
   re-run that confirms this has not been recorded.**
 
-## Work in hand when this was written
+## Last work finished
 
-Two items were started and then stopped unfinished; nothing from them is
-committed. Both are specified in the PRD.
+Both items that were in hand are done and pushed; details and numbers are in
+the PRD's Phase 2 status.
 
-1. **P2-2, skip model windows that cannot affect any emitted pixel.** New
-   branch `perf/skip-windows` stacked on `perf/blend-box`. Needed frames must
-   be bit-identical; the prediction cache must never serve a partly computed
-   segment as complete. Benefit is workload-dependent — measure it.
-2. **Reuse contrast-recovery results.** New branch `perf/recovery-reuse`
-   stacked on `perf/detector-calls`. Evidence first: count how often a
-   recovery call's inputs are bit-identical to an earlier one, including
-   boundary probes repeating work refine already did; ship code only if a real
-   saving exists. Also measure, without shipping, P2-3(c) (cheaper crop inputs
-   for recovery calls). Recovery is still about a third of detector calls in
-   refine and probes on the reference clip, with no hits there. A brightness
-   pre-gate was investigated and rejected (it would discard genuine recoveries
-   on fades and dissolves).
+1. **P2-2 skip windows** (`perf/skip-windows`): exact, but the saving is small
+   on the samples (windows saved: 10.9%, 1.0%, 0.0%). It pays on sparse text,
+   trials and partly cached re-runs.
+2. **Recovery reuse** (`perf/recovery-reuse`): exact; 6–8% of planning's
+   detector calls on two samples, under 1% on the third. P2-3(c) (cheaper
+   crop inputs) was measured and not built: 10–15× faster per call but it
+   changes plans and loses real recoveries.
+
+**Not yet measured on the reference Mac:** the time saved by either change,
+and byte identity of a clean on MPS with `VIDEOWIPE_SKIP_WINDOWS` on and off
+(proved here with ONNX on CPU only). Commands:
+
+```
+python scripts/skip_windows_estimate.py CLIPS -o OUT
+python scripts/perf_baseline.py CLIPS -o OUT/on --runs 3
+VIDEOWIPE_SKIP_WINDOWS=off python scripts/perf_baseline.py CLIPS -o OUT/off --runs 3
+cmp OUT/on/NAME/run-001/clean/NAME_clean.mp4 OUT/off/NAME/run-001/clean/NAME_clean.mp4
+```
+
+and the same on/off pair with `VIDEOWIPE_RECOVERY_REUSE` and `--no-full` for
+planning.
 
 Not started: Phase 3 of the PRD (output fidelity: variable-frame-rate timing,
 audio copy, metadata and chapters, colour tags, 10-bit/HDR, the OCR
@@ -122,4 +133,5 @@ wrong-frame crop, duration-scaled sampling) and the web UI items.
 - Environment switches added by the fork: `VIDEOWIPE_LANG`,
   `VIDEOWIPE_OUTPUT_CODEC`, `VIDEOWIPE_PRECISION`, `VIDEOWIPE_PERF_STATS`,
   `VIDEOWIPE_MASK_WINDOW_BLUR`, `VIDEOWIPE_BLEND_WINDOW_RESIZE`,
-  `VIDEOWIPE_BLEND_CACHE_MB`, `VIDEOWIPE_BAND_CROP_BUDGET_MB`.
+  `VIDEOWIPE_BLEND_CACHE_MB`, `VIDEOWIPE_BAND_CROP_BUDGET_MB`,
+  `VIDEOWIPE_SKIP_WINDOWS`, `VIDEOWIPE_RECOVERY_REUSE`.
