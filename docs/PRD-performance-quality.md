@@ -140,6 +140,36 @@ Every later requirement reports against this baseline.
 
 Effort: small. No behaviour change. Do this before anything in §6–§7.
 
+**Status.** P0-1 and P0-2 are implemented on `perf/instrumentation`, which is
+stacked on `perf/refine-exact` because it instruments the loops that branch
+rewrote. The new numbers appear in `benchmark.json` (`timing`), in
+`result.timings` and in the web job's `timings` (`detection_stats`,
+`review_stats`); `VIDEOWIPE_PERF_STATS=0` turns the counters off. Measured on
+a real clean, the timer parts sum to within 0.01% of the existing totals and
+the output video is byte-identical with and without instrumentation.
+
+**P0-3 is run with** `scripts/perf_baseline.py`:
+
+```
+python scripts/perf_baseline.py VIDEO [VIDEO ...] -o OUTDIR \
+    [--runs 3] [--trial-seconds 3] [--no-full] [--device auto|cpu|mps|cuda]
+```
+
+It records the machine (chip, cores, memory, torch/MPS, OpenCV build, ffmpeg
+encoders) without assuming any, the video's properties, per-stage timings and
+the detection counters, prints a summary and writes `perf_baseline.json`.
+`--trial-seconds N` also times a trial placed at the end of the file, which
+exposes the positioning cost. Use `--runs 3` for a steady-state median, and
+`--no-full` to measure planning alone on a long file. Not captured: time from
+upload to `preview_ready` in the web flow (the script times the engine
+stages). **Still open: running it on the reference Mac.**
+
+First data point (Linux, 4 cores, ONNX on CPU, 150 frames at 1080p): planning
+25 s, of which band fallback 9.3 s (100 detector calls on 50 sampled frames),
+refine 7.6 s, coarse sampling 5.4 s, boundary probes 1.9 s; contrast recovery
+fired on 1 of 108 refined frames. That clip is dense dialogue, so it says
+little about pauses — the long real file will show whether P2-3 matters.
+
 ## 5. Requirement index
 
 | ID | Requirement | Type | Effort | Confidence | Expected value |
@@ -588,7 +618,7 @@ One branch per group, each from upstream, each independently mergeable (C5).
 
 | Order | Branch | Contents | Gate |
 |---|---|---|---|
-| 1 | `perf/instrumentation` | P0-1, P0-2; then record P0-3 on the Mac | — |
+| 1 | `perf/instrumentation` (on `perf/refine-exact`) | P0-1, P0-2 (done); P0-3 script done, Mac run open | — |
 | 2 | `perf/refine-exact` | P1-1, P1-2, P1-8 (done) | equality tests |
 | 3 | `perf/server-exact` | P1-3, P1-4, P1-5 (done) | equality tests |
 | 4 | `perf/plan-masks` | P1-6 (done) | equality tests |
