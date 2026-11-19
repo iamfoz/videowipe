@@ -883,28 +883,135 @@ def _execution_tracks(plan: WipePlan) -> list[tuple[Track, np.ndarray]]:
     return prepared
 
 
+def _interval_index(starts: list, ends: list) -> tuple[list, list, bool]:
+    """Index half-open intervals for bisect lookup.
+
+    ``ordered`` is true only when every interval is non-empty and each ends no
+    later than the next starts (what ``validate_plan`` guarantees). Anything
+    else keeps a linear scan, so unvalidated input is never mis-bisected.
+    """
+    ordered = (all(s < e for s, e in zip(starts, ends))
+               and all(e <= s for e, s in zip(ends, starts[1:])))
+    return starts, ends, ordered
+
+
+def _rows_index(rows) -> tuple[list, list, bool]:
+    return _interval_index([row["start"] for row in rows], [row["end"] for row in rows])
+
+
+def _segments_index(segments) -> tuple[list, list, bool]:
+    return _interval_index([s.start for s in segments], [s.end for s in segments])
+
+
+def _matching_intervals(index: tuple[list, list, bool], frame: int) -> tuple[int, ...]:
+    """Indices of the intervals containing *frame* (bisect when ordered)."""
+    starts, ends, ordered = index
+    if ordered:
+        i = bisect_right(starts, frame) - 1
+        return (i,) if i >= 0 and frame < ends[i] else ()
+    return tuple(i for i in range(len(starts)) if starts[i] <= frame < ends[i])
+
+
+def _nonzero_bounds(arr: np.ndarray) -> tuple[int, int, int, int] | None:
+    """``(y0, y1, x0, x1)`` half-open bounds of the non-zero pixels, if any."""
+    rows = np.flatnonzero(arr.any(axis=1))
+    if rows.size == 0:
+        return None
+    cols = np.flatnonzero(arr.any(axis=0))
+    return int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
+
+
+# Columns of padding added on top of the Gaussian reach, and the column grid
+# the blurred window starts on. OpenCV's SIMD row/column kernels give the last
+# bit a different value depending on a pixel's lane position, so the window's
+# left edge stays on the same 64-column grid as the frame's and its far edge
+# keeps clear of any pixel that can be non-zero.
+_BLUR_MARGIN = 64
+
+
+def _project_region(
+    prepared: list[tuple[Track, np.ndarray]],
+    active_tracks: tuple[int, ...],
+    frame_shape: tuple[int, int],
+    feather_radius: int = 0,
+    frame_index: int | None = None,
+    row_index: dict | None = None,
+    static_bounds: dict | None = None,
+) -> tuple[int, int, np.ndarray] | None:
+    """Project the active tracks into a window of the frame.
+
+    Returns ``(y0, x0, window)`` or ``None`` when no remove pixel is active; the
+    frame is ``0`` everywhere outside the window. Values inside the window are
+    exactly those the full-frame projection produces, because the window is the
+    mask's bounding box padded by twice the blur's half-width (so every pixel
+    the kernel can read is inside it, or beyond a real image border handled the
+    same way) and stays on the frame's SIMD column grid.
+    """
+    height, width = frame_shape
+    rects = []
+    statics = []
+    for index in active_tracks:
+        track, spatial = prepared[index]
+        if track.action != "remove":
+            continue
+        if frame_index is not None and track.spatial_segments is not None:
+            rows = track.spatial_segments
+            lookup = row_index.get(index) if row_index is not None else None
+            if lookup is None:
+                lookup = _rows_index(rows)
+            for i in _matching_intervals(lookup, frame_index):
+                rects.extend(rows[i]["boxes"])
+        else:
+            if static_bounds is not None and index in static_bounds:
+                bounds = static_bounds[index]
+            else:
+                bounds = _nonzero_bounds(spatial)
+                if static_bounds is not None:
+                    static_bounds[index] = bounds
+            if bounds is not None:
+                statics.append((spatial, bounds))
+    if not rects and not statics:
+        return None
+    y0 = min([b[1] for b in rects] + [b[0] for _, b in statics])
+    y1 = max([b[3] + 1 for b in rects] + [b[1] for _, b in statics])
+    x0 = min([b[0] for b in rects] + [b[2] for _, b in statics])
+    x1 = max([b[2] + 1 for b in rects] + [b[3] for _, b in statics])
+    kernel = max(3, feather_radius * 2 + 1)
+    if feather_radius > 0:
+        pad = 2 * (kernel // 2) + _BLUR_MARGIN
+        y0, y1 = max(0, y0 - pad), min(height, y1 + pad)
+        x0, x1 = max(0, x0 - pad) // _BLUR_MARGIN * _BLUR_MARGIN, min(width, x1 + pad)
+    window = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
+    for bx1, by1, bx2, by2 in rects:
+        window[by1 - y0:by2 + 1 - y0, bx1 - x0:bx2 + 1 - x0] = 1
+    for spatial, _bounds in statics:
+        np.maximum(window, spatial[y0:y1, x0:x1], out=window)
+    if feather_radius > 0 and window.any():
+        flat = window.astype(np.float32)
+        blurred = cv2.GaussianBlur(flat, (kernel, kernel), feather_radius / 2.0)
+        window = np.clip(np.where(flat >= 1.0, 1.0, blurred), 0.0, 1.0)
+    for index in active_tracks:
+        if prepared[index][0].action == "protect":
+            window[prepared[index][1][y0:y1, x0:x1] != 0] = 0
+    return y0, x0, window
+
+
 def _project_mask(
     prepared: list[tuple[Track, np.ndarray]],
     active_tracks: tuple[int, ...],
     frame_shape: tuple[int, int],
     feather_radius: int = 0,
     frame_index: int | None = None,
+    row_index: dict | None = None,
+    static_bounds: dict | None = None,
 ) -> np.ndarray:
-    mask = np.zeros(frame_shape, dtype=np.uint8)
-    for index in active_tracks:
-        if prepared[index][0].action == "remove":
-            track, spatial = prepared[index]
-            if frame_index is not None and track.spatial_segments is not None:
-                spatial = _spatial_mask(track, frame_shape, frame_index)
-            np.maximum(mask, spatial, out=mask)
-    if feather_radius > 0 and mask.any():
-        flat = mask.astype(np.float32)
-        kernel = max(3, feather_radius * 2 + 1)
-        blurred = cv2.GaussianBlur(flat, (kernel, kernel), feather_radius / 2.0)
-        mask = np.clip(np.where(flat >= 1.0, 1.0, blurred), 0.0, 1.0)
-    for index in active_tracks:
-        if prepared[index][0].action == "protect":
-            mask[prepared[index][1] != 0] = 0
+    region = _project_region(prepared, active_tracks, frame_shape, feather_radius,
+                             frame_index, row_index, static_bounds)
+    if region is None:
+        return np.zeros(frame_shape, dtype=np.uint8)
+    y0, x0, window = region
+    mask = np.zeros(frame_shape, dtype=window.dtype)
+    mask[y0:y0 + window.shape[0], x0:x0 + window.shape[1]] = window
     return mask
 
 
@@ -938,19 +1045,26 @@ def execution_masks(
     if not prepared or not is_temporal(plan):
         return static_mask, None
 
+    # Built once: bisect indexes for segments and rows, and the bounds of each
+    # static mask, so a cache miss neither scans nor re-measures anything.
+    row_index = {i: _rows_index(track.spatial_segments)
+                 for i, (track, _) in enumerate(prepared) if track.spatial_segments is not None}
+    segment_index = [_segments_index(track.segments) for track, _ in prepared]
+    static_bounds: dict = {}
+    spatial_starts = {i: index[0] for i, index in row_index.items()}
+
     @lru_cache(maxsize=1)
     def mask_for(active_tracks: tuple[int, ...], spatial_frame: int | None) -> np.ndarray:
         mask = _project_mask(
-            prepared, active_tracks, frame_shape, feather_radius, spatial_frame
+            prepared, active_tracks, frame_shape, feather_radius, spatial_frame,
+            row_index, static_bounds
         )
         mask.setflags(write=False)
         return mask
 
-    spatial_starts = {i: [row["start"] for row in track.spatial_segments]
-                      for i, (track, _) in enumerate(prepared) if track.spatial_segments is not None}
-
     def frame_mask(frame_index: int) -> np.ndarray:
-        active = _active_tracks(prepared, frame_index)
+        active = tuple(i for i, index in enumerate(segment_index)
+                       if _matching_intervals(index, frame_index))
         boundary = None
         for i in active:
             if i not in spatial_starts:
@@ -994,9 +1108,29 @@ def _union_projection(prepared, frame_shape, feather_radius=0):
                         | {s.end for track, _ in prepared for s in track.segments})
     boundaries = sorted(set(boundaries) | {row[key] for track, _ in prepared
                          for row in (track.spatial_segments or []) for key in ("start", "end")})
+    row_index = {i: _rows_index(track.spatial_segments)
+                 for i, (track, _) in enumerate(prepared) if track.spatial_segments is not None}
+    segment_index = [_segments_index(track.segments) for track, _ in prepared]
+    static_bounds: dict = {}
+    seen = set()
     for frame in boundaries[:-1]:
-        np.maximum(result, _project_mask(prepared, _active_tracks(prepared, frame),
-                                        frame_shape, feather_radius, frame), out=result)
+        active = tuple(i for i, index in enumerate(segment_index)
+                       if _matching_intervals(index, frame))
+        # The projection depends only on the active tracks and, for spatial
+        # remove tracks, on which boxes are live: identical states are skipped.
+        state = (active, tuple(
+            frozenset(tuple(box) for i_row in _matching_intervals(row_index[i], frame)
+                      for box in prepared[i][0].spatial_segments[i_row]["boxes"])
+            for i in active if i in row_index and prepared[i][0].action == "remove"))
+        if state in seen:
+            continue
+        seen.add(state)
+        region = _project_region(prepared, active, frame_shape, feather_radius, frame,
+                                 row_index, static_bounds)
+        if region is not None:
+            y0, x0, window = region
+            view = result[y0:y0 + window.shape[0], x0:x0 + window.shape[1]]
+            np.maximum(view, window, out=view)
     return result
 
 
