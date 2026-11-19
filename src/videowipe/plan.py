@@ -883,6 +883,9 @@ def _execution_tracks(plan: WipePlan) -> list[tuple[Track, np.ndarray]]:
     return prepared
 
 
+import threading  # noqa: E402  (kept beside the mask helpers that use it)
+
+
 def _interval_index(starts: list, ends: list) -> tuple[list, list, bool]:
     """Index half-open intervals for bisect lookup.
 
@@ -922,11 +925,83 @@ def _nonzero_bounds(arr: np.ndarray) -> tuple[int, int, int, int] | None:
 
 
 # Columns of padding added on top of the Gaussian reach, and the column grid
-# the blurred window starts on. OpenCV's SIMD row/column kernels give the last
-# bit a different value depending on a pixel's lane position, so the window's
-# left edge stays on the same 64-column grid as the frame's and its far edge
-# keeps clear of any pixel that can be non-zero.
+# the blurred window starts on. OpenCV's SIMD row/column kernels can give the
+# last bit a different value depending on a pixel's lane position, so the
+# window's left edge stays on the same 64-column grid as the frame's and its
+# far edge keeps clear of any pixel that can be non-zero. These values were
+# found empirically on x86 with IPP; exactness is build-dependent (NEON and
+# other OpenCV builds are unproven). What guarantees correctness is the
+# one-off self-test below, which disables the window wherever it differs.
 _BLUR_MARGIN = 64
+
+_WINDOW_BLUR_ENV = "VIDEOWIPE_MASK_WINDOW_BLUR"
+_window_blur_lock = threading.Lock()
+_window_blur_decision: bool | None = None
+
+
+def _window_blur_selftest() -> bool:
+    """True when the windowed blur equals the full-frame blur on a fixed battery.
+
+    Deterministic and free of side effects (no global OpenCV settings are
+    touched). Frame widths that are and are not multiples of 16/64, boxes at
+    odd column offsets and on every border and corner, several radii, with
+    and without a protect mask.
+    """
+    rng = np.random.default_rng(20240607)
+    # (width, height, radius); the wide short frames keep the check cheap
+    # while exercising the same row widths as the real frame sizes.
+    frames = [(1920, 1080, 4), (1279, 360, 4), (203, 121, 1), (65, 47, 11),
+              (1920, 90, 7), (1279, 70, 2), (1000, 60, 4), (333, 50, 11),
+              (64, 48, 4), (130, 40, 1)]
+    for width, height, radius in frames:
+        boxes = [[0, 0, 0, 0], [width - 1, height - 1, width - 1, height - 1],
+                 [0, height // 2, 6, height // 2 + 3], [width - 7, 1, width - 1, 4],
+                 [width // 3 + 1, 0, width // 3 + 40, height - 1]]
+        large = width * height > 300_000
+        if large:  # full-size frames are slow to blur: one box touching top and bottom
+            boxes = [boxes[4]]
+        else:
+            x1 = int(rng.integers(0, width)); y1 = int(rng.integers(0, height))
+            boxes.append([x1, y1, int(rng.integers(x1, min(width, x1 + 300))),
+                          int(rng.integers(y1, min(height, y1 + 60)))])
+        protect = np.zeros((height, width), dtype=np.uint8)
+        protect[height // 4:height // 2 + 1, width // 5:width // 2] = 1
+        empty = np.zeros((height, width), np.uint8)
+        for number, box in enumerate(boxes):
+            remove = Track("r", "t", "r", "remove", (0, 0, 0, 0), 1, 1, "", [],
+                           "r", spatial_segments=[{"start": 0, "end": 1, "boxes": [box]}])
+            guard = Track("p", "t", "p", "protect", (0, 0, 0, 0), 1, 1, "", [], "p")
+            prepared = [(remove, empty), (guard, protect)]
+            for active in (((0,), (0, 1)) if number == 0 and not large else ((0, 1),)):
+                full = _project_mask(prepared, active, (height, width), radius, 0, windowed=False)
+                part = _project_mask(prepared, active, (height, width), radius, 0, windowed=True)
+                if full.dtype != part.dtype or not np.array_equal(full, part):
+                    return False
+    return True
+
+
+def _window_blur_enabled() -> bool:
+    """Whether feathering may blur only a window of the frame (decided once).
+
+    ``VIDEOWIPE_MASK_WINDOW_BLUR`` is ``auto`` (default; run the self-test),
+    ``off`` (always full frame) or ``on`` (skip the self-test). Anything else
+    behaves as ``auto``.
+    """
+    global _window_blur_decision
+    if _window_blur_decision is None:
+        with _window_blur_lock:
+            if _window_blur_decision is None:
+                mode = os.environ.get(_WINDOW_BLUR_ENV, "auto").strip().lower()
+                _window_blur_decision = (False if mode == "off" else True if mode == "on"
+                                         else _window_blur_selftest())
+    return _window_blur_decision
+
+
+def _reset_window_blur_decision() -> None:
+    """Forget the cached decision (for tests and after changing the override)."""
+    global _window_blur_decision
+    with _window_blur_lock:
+        _window_blur_decision = None
 
 
 def _project_region(
@@ -937,6 +1012,7 @@ def _project_region(
     frame_index: int | None = None,
     row_index: dict | None = None,
     static_bounds: dict | None = None,
+    windowed: bool | None = None,
 ) -> tuple[int, int, np.ndarray] | None:
     """Project the active tracks into a window of the frame.
 
@@ -977,10 +1053,12 @@ def _project_region(
     x0 = min([b[0] for b in rects] + [b[2] for _, b in statics])
     x1 = max([b[2] + 1 for b in rects] + [b[3] for _, b in statics])
     kernel = max(3, feather_radius * 2 + 1)
-    if feather_radius > 0:
+    if feather_radius > 0 and (_window_blur_enabled() if windowed is None else windowed):
         pad = 2 * (kernel // 2) + _BLUR_MARGIN
         y0, y1 = max(0, y0 - pad), min(height, y1 + pad)
         x0, x1 = max(0, x0 - pad) // _BLUR_MARGIN * _BLUR_MARGIN, min(width, x1 + pad)
+    elif feather_radius > 0:
+        y0, y1, x0, x1 = 0, height, 0, width  # the original full-frame blur
     window = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
     for bx1, by1, bx2, by2 in rects:
         window[by1 - y0:by2 + 1 - y0, bx1 - x0:bx2 + 1 - x0] = 1
@@ -1004,9 +1082,10 @@ def _project_mask(
     frame_index: int | None = None,
     row_index: dict | None = None,
     static_bounds: dict | None = None,
+    windowed: bool | None = None,
 ) -> np.ndarray:
     region = _project_region(prepared, active_tracks, frame_shape, feather_radius,
-                             frame_index, row_index, static_bounds)
+                             frame_index, row_index, static_bounds, windowed)
     if region is None:
         return np.zeros(frame_shape, dtype=np.uint8)
     y0, x0, window = region

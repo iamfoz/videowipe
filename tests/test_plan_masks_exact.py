@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 
 from videowipe.errors import InvalidInputError
+from videowipe import plan as plan_module
 from videowipe.plan import (
     MaskAsset, Segment, Source, TemporalResolution, Track, WipePlan,
     _execution_tracks, _project_mask, _spatial_mask, _union_projection,
@@ -243,8 +244,36 @@ def compare_plan(plan, radii=RADII, *, every=1, reverse_too=True):
         assert_same(predicted_mask_at(plan, i), expected.astype(bool), f"predicted_mask_at {i}")
 
 
+ENV = plan_module._WINDOW_BLUR_ENV
+
+
+@pytest.fixture
+def window_mode(request, monkeypatch):
+    """Run a test with the windowed blur on its default (self-tested) setting and forced off."""
+    mode = request.param
+    monkeypatch.setenv(ENV, mode)
+    plan_module._reset_window_blur_decision()
+    yield mode
+    monkeypatch.undo()
+    plan_module._reset_window_blur_decision()
+
+
+def pytest_generate_tests(metafunc):
+    if "window_mode" in metafunc.fixturenames:
+        metafunc.parametrize("window_mode", ["auto", "off"], indirect=True)
+
+
+@pytest.fixture
+def fresh_auto(monkeypatch):
+    monkeypatch.delenv(ENV, raising=False)
+    plan_module._reset_window_blur_decision()
+    yield
+    plan_module._reset_window_blur_decision()
+
+
 # ── plans built by the repository's existing tests ───────────────────────────
 
+@pytest.mark.usefixtures("window_mode")
 def test_existing_fixture_plans_are_bit_identical():
     from test_plan_protection import protected_plan
     from test_spatial_subtitles import local_plan
@@ -267,6 +296,7 @@ def test_existing_fixture_plans_are_bit_identical():
 SIZES = [(64, 48), (65, 47), (203, 121), (1279, 719)]
 
 
+@pytest.mark.usefixtures("window_mode")
 @pytest.mark.parametrize("width,height", SIZES)
 def test_static_tracks_only(width, height):
     shape = (height, width)
@@ -279,6 +309,7 @@ def test_static_tracks_only(width, height):
     compare_plan(always)
 
 
+@pytest.mark.usefixtures("window_mode")
 @pytest.mark.parametrize("width,height", SIZES)
 @pytest.mark.parametrize("seed", [0, 1])
 def test_many_rows_with_varied_boxes(width, height, seed):
@@ -290,6 +321,7 @@ def test_many_rows_with_varied_boxes(width, height, seed):
     compare_plan(plan, every=1 if width < 300 else 2)
 
 
+@pytest.mark.usefixtures("window_mode")
 @pytest.mark.parametrize("width,height", [(64, 48), (203, 121), (1279, 719)])
 def test_overlapping_remove_tracks_and_protection(width, height):
     rng = np.random.default_rng(width)
@@ -306,6 +338,7 @@ def test_overlapping_remove_tracks_and_protection(width, height):
     compare_plan(make_plan(width, height, frames, tracks), every=1 if width < 300 else 3)
 
 
+@pytest.mark.usefixtures("window_mode")
 def test_adjacent_rows_gaps_and_edge_boxes_with_protect():
     width, height, frames = 130, 70, 24
     shape = (height, width)
@@ -322,6 +355,7 @@ def test_adjacent_rows_gaps_and_edge_boxes_with_protect():
     compare_plan(make_plan(width, height, frames, tracks))
 
 
+@pytest.mark.usefixtures("window_mode")
 def test_unordered_rows_fall_back_to_the_linear_scan():
     """Execution validates, so unordered rows are rejected before any bisect."""
     width, height = 40, 30
@@ -345,6 +379,7 @@ def test_unordered_rows_fall_back_to_the_linear_scan():
 
 # ── the blur window itself ───────────────────────────────────────────────────
 
+@pytest.mark.usefixtures("window_mode")
 @pytest.mark.parametrize("radius", [1, 2, 4, 7, 12])
 def test_cropped_blur_equals_full_frame_blur_for_random_boxes(radius):
     rng = np.random.default_rng(radius)
@@ -371,6 +406,7 @@ def test_returned_masks_are_stable_and_independent():
 
 # ── performance ──────────────────────────────────────────────────────────────
 
+@pytest.mark.usefixtures("fresh_auto")
 def test_thirty_thousand_rows_speed_and_exactness():
     width, height = 1920, 1080
     rows_count, row_len = 30_000, 2
@@ -406,6 +442,7 @@ def test_thirty_thousand_rows_speed_and_exactness():
     assert ratio >= 3.0
 
 
+@pytest.mark.usefixtures("fresh_auto")
 def test_protected_union_is_faster_and_exact():
     width, height, frames = 1280, 720, 400
     rng = np.random.default_rng(3)
@@ -425,3 +462,127 @@ def test_protected_union_is_faster_and_exact():
           f"old {old_time:.2f} s, new {new_time:.3f} s, speed-up {old_time / new_time:.1f}x")
     assert_same(new, old, "union")
     assert new_time < old_time
+
+
+# ── the capability gate for the windowed blur ────────────────────────────────
+
+@pytest.fixture
+def gate(monkeypatch):
+    """Isolated decision state; restored (and recomputed lazily) afterwards."""
+    monkeypatch.delenv(ENV, raising=False)
+    plan_module._reset_window_blur_decision()
+    yield
+    monkeypatch.undo()
+    plan_module._reset_window_blur_decision()
+
+
+def test_selftest_passes_here_and_reports_its_cost(gate):
+    timings = []
+    for _ in range(3):
+        start = time.perf_counter()
+        ok = plan_module._window_blur_selftest()
+        timings.append((time.perf_counter() - start) * 1e3)
+        assert ok, "windowed blur is not bit-identical on this OpenCV build"
+    print(f"\nwindow-blur self-test: first {timings[0]:.1f} ms, then "
+          f"{timings[1]:.1f} / {timings[2]:.1f} ms")
+    assert plan_module._window_blur_enabled() is True
+    assert min(timings) < 1000  # generous: it is meant to be tens of milliseconds
+
+
+def test_selftest_does_not_touch_opencv_thread_settings(gate):
+    before = cv2.getNumThreads()
+    plan_module._window_blur_selftest()
+    assert cv2.getNumThreads() == before
+
+
+@pytest.mark.parametrize("value,expected_calls,expected", [
+    ("off", 0, False), ("OFF", 0, False), (" off ", 0, False),
+    ("on", 0, True), ("On", 0, True),
+    ("auto", 1, True), ("", 1, True), ("bogus", 1, True), ("1", 1, True),
+])
+def test_env_override_values(gate, monkeypatch, value, expected_calls, expected):
+    calls = []
+    monkeypatch.setattr(plan_module, "_window_blur_selftest", lambda: calls.append(1) or True)
+    monkeypatch.setenv(ENV, value)
+    plan_module._reset_window_blur_decision()
+    assert plan_module._window_blur_enabled() is expected
+    assert plan_module._window_blur_enabled() is expected  # cached
+    assert len(calls) == expected_calls
+
+
+@pytest.mark.parametrize("value", ["auto", "bogus"])
+def test_invalid_and_auto_values_follow_a_failing_selftest(gate, monkeypatch, value):
+    monkeypatch.setattr(plan_module, "_window_blur_selftest", lambda: False)
+    monkeypatch.setenv(ENV, value)
+    plan_module._reset_window_blur_decision()
+    assert plan_module._window_blur_enabled() is False
+
+
+def test_unset_env_means_auto(gate, monkeypatch):
+    monkeypatch.setattr(plan_module, "_window_blur_selftest", lambda: False)
+    plan_module._reset_window_blur_decision()
+    assert plan_module._window_blur_enabled() is False
+
+
+def test_decision_is_computed_once_across_threads(gate, monkeypatch):
+    import threading
+    calls = []
+
+    def slow_selftest():
+        calls.append(1)
+        time.sleep(0.05)
+        return True
+
+    monkeypatch.setattr(plan_module, "_window_blur_selftest", slow_selftest)
+    plan_module._reset_window_blur_decision()
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(plan_module._window_blur_enabled()))
+               for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results == [True] * 8 and len(calls) == 1
+
+
+def test_failed_selftest_falls_back_to_full_frame_and_stays_exact(gate, monkeypatch):
+    from test_spatial_subtitles import local_plan
+    monkeypatch.setattr(plan_module, "_window_blur_selftest", lambda: False)
+    plan_module._reset_window_blur_decision()
+    assert plan_module._window_blur_enabled() is False
+    compare_plan(local_plan())
+    shape = (121, 203)
+    rng = np.random.default_rng(5)
+    plan = make_plan(203, 121, 30, [
+        spatial_track("s", random_rows(rng, 203, 121, 30, 10), [Segment(0, 30)], shape),
+        static_track("p", [20, 20, 120, 80], [Segment(5, 15)], shape, "protect")])
+    compare_plan(plan)
+
+
+def test_real_degradation_is_detected_and_falls_back(gate, monkeypatch):
+    """A window that is too tight really differs; the self-test notices and disables it."""
+    monkeypatch.setattr(plan_module, "_BLUR_MARGIN", 1)
+    monkeypatch.setenv(ENV, "on")
+    plan_module._reset_window_blur_decision()
+    rng = np.random.default_rng(1)
+    differs = False
+    for _ in range(300):
+        width = int(rng.integers(20, 400)); height = int(rng.integers(20, 200))
+        box = random_box(rng, width, height)
+        track = spatial_track("s", [{"start": 0, "end": 1, "boxes": [box]}], [Segment(0, 1)],
+                              (height, width))
+        prepared = [(track, track.mask)]
+        differs |= not np.array_equal(
+            _project_mask(prepared, (0,), (height, width), 4, 0),
+            _oracle_project_mask(prepared, (0,), (height, width), 4, 0))
+    if not differs:
+        pytest.skip("this OpenCV build is exact even with a minimal window")
+    monkeypatch.setenv(ENV, "auto")
+    plan_module._reset_window_blur_decision()
+    assert plan_module._window_blur_selftest() is False
+    assert plan_module._window_blur_enabled() is False
+    # With the gate closed the same degraded constants cannot corrupt a mask.
+    rng = np.random.default_rng(2)
+    plan = make_plan(203, 121, 40, [spatial_track(
+        "s", random_rows(rng, 203, 121, 40, 14), [Segment(0, 40)], (121, 203))])
+    compare_plan(plan)
