@@ -582,6 +582,7 @@ def print_counters(stats: dict) -> None:
                ("detect", "detect_calls"), ("fwd", "forward_passes"),
                ("rec.fr", "recovery_frames"), ("rec.call", "recovery_calls"),
                ("rec.det", "recovery_detect_calls"), ("rec.hit", "recovery_hits"),
+               ("rec.skip", "recovery_variants_skipped"),
                ("present", "frames_present"),
                ("crops", "band_crops_stored"), ("2nd.pass", "band_second_pass"))
     print("\nDetection counters per planning phase")
