@@ -654,6 +654,11 @@ class STTNInpainter:
                 "failed to find subtitles. Try providing a mask manually with -m."
             )
 
+        # Source timestamps for variable-rate sources (see videowipe/timing.py);
+        # constant-rate sources and VIDEOWIPE_SOURCE_TIMING=off are unchanged.
+        from videowipe.timing import plan_source_timing
+        source_timing = plan_source_timing(job)
+
         cache = None
         if job.prediction_cache_dir is not None:
             from videowipe.inpainters.prediction_cache import PredictionCache
@@ -710,7 +715,7 @@ class STTNInpainter:
             from videowipe.export import hevc_output_args
             ffmpeg_cmd += hevc_output_args(job.video_path, video_out_path, ori_h)
         stderr_file = tempfile.TemporaryFile()
-        pipe = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stderr=stderr_file)
+        pipe = source_timing.popen(ffmpeg_cmd, stderr_file)
         stdin_closed = False
         processing_failed = False
         try:
