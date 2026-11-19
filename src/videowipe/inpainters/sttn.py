@@ -210,7 +210,7 @@ class STTNInpainter:
             identity = dict(runtime, source_sha256=_sha256_file(job.video_path),
                             source_size=[ori_w, ori_h], input_size=[w, h],
                             backend=type(self.backend).__name__,
-                            precision='float16-autocast' if str(runtime['device']).startswith('cuda') else 'float32',
+                            precision=getattr(self.backend, 'precision_label', lambda: 'float16-autocast' if str(runtime['device']).startswith('cuda') else 'float32')(),
                             ref_length=self.ref_length, neighbor_stride=self.neighbor_stride,
                             implementation_sha256=implementation.hexdigest())
             cache = PredictionCache(job.prediction_cache_dir, identity)

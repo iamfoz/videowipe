@@ -855,7 +855,7 @@ class WipeEngine:
                          "inpainters/sttn.py", "models/sttn.py"):
                 implementation.update((root / name).read_bytes())
             return dict(metadata, backend=type(backend).__name__,
-                        precision="float16-autocast" if str(metadata["device"]).startswith("cuda") else "float32",
+                        precision=getattr(backend, "precision_label", lambda: "float16-autocast" if str(metadata["device"]).startswith("cuda") else "float32")(),
                         gap=self._task_impl.gap,
                         ref_length=self._task_impl.inpainter.ref_length,
                         neighbor_stride=self._task_impl.inpainter.neighbor_stride,
