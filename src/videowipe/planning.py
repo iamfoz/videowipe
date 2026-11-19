@@ -484,6 +484,12 @@ def _recover_descenders(plan, tracks, video_path, check_cancelled):
         for i in range(indices[0], indices[-1]+1):
             if check_cancelled is not None:
                 check_cancelled()
+            if hasattr(reader, 'grab') and not any(
+                    frames[track.id].get(i) is not None for track in tracks):
+                # No track looks at this frame; advance without converting it.
+                if not reader.grab():
+                    raise ValueError(f'Cannot decode subtitle outline frame {i}')
+                continue
             ok, frame = reader.read()
             if not ok:
                 raise ValueError(f'Cannot decode subtitle outline frame {i}')

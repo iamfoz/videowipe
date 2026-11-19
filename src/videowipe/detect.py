@@ -1634,13 +1634,35 @@ def refine_temporal_presence(
     warnings: list[str] = []
     failed = getattr(result, "failed_frame_indices", set())
     result.failed_frame_indices = failed
+    # Per-candidate bookkeeping is kept in sets/lists while the loop runs and
+    # written back once afterwards (see the ``finally`` below), so each frame
+    # costs O(1) per active candidate instead of rebuilding and sorting growing
+    # lists. ``state`` maps a candidate id to ``[temporal_set,
+    # original_presence, processed_frames, added_frames]``.
+    state: dict[str, list] = {}
+    can_grab = hasattr(cap, "grab") and hasattr(cap, "retrieve")
+    # Nothing beyond the last segment end is ever inspected, so stop there.
+    # Unlike the previous implementation, frames after that point are not
+    # decoded, so a file that is shorter than ``expected_frame_count`` only
+    # in that unread tail no longer raises; every frame up to the last one
+    # actually needed is still checked.
+    stop_index = min(
+        expected_frame_count,
+        max((end for rows in segments.values() for _, end in rows), default=0),
+    )
     try:
         frame_index = 0
-        while frame_index < expected_frame_count:
+        while frame_index < stop_index:
             if check_cancelled is not None:
                 check_cancelled()
-            ok, frame = cap.read()
-            if not ok:
+            # grab() advances the decoder by exactly one frame, as read()
+            # does; pixels are only converted when a candidate needs them.
+            # Capture-like objects without grab() fall back to read().
+            if can_grab:
+                grabbed, frame = cap.grab(), None
+            else:
+                grabbed, frame = cap.read()
+            if not grabbed:
                 raise ValueError(
                     f"Temporal refinement decoded {frame_index} frames; "
                     f"expected {expected_frame_count}"
@@ -1651,13 +1673,21 @@ def refine_temporal_presence(
                 if any(start <= frame_index < end for start, end in segments[candidate_id])
             ]
             if active:
+                if can_grab:
+                    ok, frame = cap.retrieve()
+                    if not ok:
+                        raise ValueError(
+                            f"Temporal refinement decoded {frame_index} frames; "
+                            f"expected {expected_frame_count}"
+                        )
                 for candidate in active:
-                    candidate.temporal_sample_indices = sorted(set(
-                        candidate.temporal_sample_indices or result.sample_indices
-                    ) | {frame_index})
-                    candidate.presence_frames = [
-                        index for index in candidate.presence_frames if index != frame_index
-                    ]
+                    row = state.get(candidate.id)
+                    if row is None:
+                        row = state[candidate.id] = [
+                            set(candidate.temporal_sample_indices or result.sample_indices),
+                            candidate.presence_frames, set(), [],
+                        ]
+                    row[2].add(frame_index)
                 if frame_index in failed:
                     boxes = []
                     detect_failed = True
@@ -1688,7 +1718,7 @@ def refine_temporal_presence(
                         )
                         for box in boxes
                     ):
-                        candidate.presence_frames.append(frame_index)
+                        state[candidate.id][3].append(frame_index)
                     if not detect_failed and _needs_contrast_recovery(
                         boxes, candidate.bbox, frame.shape[1], frame.shape[0],
                     ):
@@ -1710,13 +1740,12 @@ def refine_temporal_presence(
                             failed.add(frame_index)
                             result.sampled_frame_boxes[frame_index] = []
                             for affected in active:
-                                affected.presence_frames = [
-                                    index for index in affected.presence_frames
-                                    if index != frame_index
-                                ]
+                                added = state[affected.id][3]
+                                while added and added[-1] == frame_index:
+                                    added.pop()
                             break
                         if recovered:
-                            candidate.presence_frames.append(frame_index)
+                            state[candidate.id][3].append(frame_index)
                             result.sampled_frame_boxes[frame_index] = (
                                 list(result.sampled_frame_boxes[frame_index])
                                 + recovered
@@ -1726,6 +1755,18 @@ def refine_temporal_presence(
                 progress(frame_index, expected_frame_count)
     finally:
         cap.release()
+        # The values the per-frame rebuilds used to leave behind, including
+        # when the loop is interrupted part-way.
+        for candidate in candidates.values():
+            row = state.get(candidate.id)
+            if row is not None:
+                candidate.temporal_sample_indices = sorted(row[0] | row[2])
+                candidate.presence_frames = [
+                    index for index in row[1] if index not in row[2]
+                ] + row[3]
+
+    if progress is not None and stop_index < expected_frame_count:
+        progress(expected_frame_count, expected_frame_count)
 
     for candidate in candidates.values():
         candidate.presence_frames = sorted(set(candidate.presence_frames))
