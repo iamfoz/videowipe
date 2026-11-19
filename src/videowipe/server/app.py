@@ -303,6 +303,7 @@ def _run_preview(job: Job, intent: str | None) -> None:
             cancellation=job.token, on_candidates=candidates_ready,
         )
         default_selected = [track.id for track in plan.remove_tracks]
+        detection_stats = getattr(_get_engine(), "last_detection_stats", None)
         with job.lock:
             selected = list(default_selected) if job.overrides is None else job.overrides["selected_ids"]
             conflicts = sorted(set(selected) - {track.id for track in plan.tracks if track.segments})
@@ -310,7 +311,8 @@ def _run_preview(job: Job, intent: str | None) -> None:
                        plan_dir=str(plan_dir), review_ready=True, final_plan_ready=True,
                        conflicts=conflicts, progress=0.0, phase="preview", state="preview_ready",
                        warnings=job.input_warnings + list(plan.warnings),
-                       timings=dict(job.timings, plan_s=time.perf_counter() - started))
+                       timings=dict(job.timings, plan_s=time.perf_counter() - started,
+                                    **({"detection_stats": detection_stats} if detection_stats else {})))
     except Exception as exc:
         _set_error(job, exc)
 
@@ -668,6 +670,10 @@ def _prepare_execution(job: Job, plan, run_dir):
             on_progress=lambda event: _update_progress(job, event), cancellation=job.token,
             output_dir=str(run_dir),
         )
+        review_stats = getattr(_get_engine(), "last_detection_stats", None)
+        if review_stats:
+            with job.lock:
+                job.timings["review_stats"] = review_stats
         evidence_path = run_dir / "refinement_evidence.json"
         if evidence_path.is_file():
             with job.lock:

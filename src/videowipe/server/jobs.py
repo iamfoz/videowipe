@@ -208,8 +208,7 @@ def restore_last(output_base: str) -> Optional[Job]:
         if not isinstance(data.get("source_sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", data["source_sha256"]):
             raise ValueError("invalid source identity")
         if not isinstance(data.get("timings"), dict) or any(
-            type(value) not in (int, float) or not math.isfinite(value) or value < 0
-            for value in data["timings"].values()
+            not _valid_timing(key, value) for key, value in data["timings"].items()
         ):
             raise ValueError("invalid timings")
         overrides = data.get("overrides")
@@ -323,6 +322,22 @@ def reserve_job(job: Job) -> None:
 _current_job: Optional[Job] = None
 _current_lock = threading.Lock()
 JOBS: dict[str, Job] = {}
+
+
+def _is_timing_number(value) -> bool:
+    return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+
+def _valid_timing(key, value) -> bool:
+    """A timing is a finite non-negative number; ``*_stats`` entries are
+    ``{phase: {counter: number}}`` objects of planning counters."""
+    if isinstance(key, str) and key.endswith("_stats") and isinstance(value, dict):
+        return all(
+            isinstance(phase, dict)
+            and all(_is_timing_number(count) for count in phase.values())
+            for phase in value.values()
+        )
+    return _is_timing_number(value)
 
 
 class JobBusy(Exception):

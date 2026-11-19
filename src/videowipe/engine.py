@@ -1,6 +1,7 @@
 """WipeEngine and convenience functions."""
 from __future__ import annotations
 
+import copy
 import importlib
 import hashlib
 import json
@@ -16,6 +17,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 import cv2
 import numpy as np
 
+from videowipe import perfstats
 from videowipe.api import (
     CancellationToken,
     ProgressCallback,
@@ -176,6 +178,9 @@ class WipeEngine:
         # surfaced through WipeResult by run(). Reset at the start of process().
         self._last_warnings: list[str] = []
         self._last_agent_decision = {"status": "not_requested", "selection_source": "local_rules", "reason": None}
+        # Per-phase detection counters of the most recent plan() / process() /
+        # review refinement; replaced (never merged) by every such run.
+        self._last_detection_stats: dict = {}
 
     def __enter__(self) -> "WipeEngine":
         return self
@@ -187,6 +192,24 @@ class WipeEngine:
     def agent_decision(self) -> dict:
         """Safe diagnostic snapshot for the most recent request, including process()."""
         return dict(self._last_agent_decision)
+
+    @property
+    def last_detection_stats(self) -> dict:
+        """Per-phase detection/refine counters of the most recent planning run.
+
+        ``{phase: {"wall_s": ..., "frames_converted": ..., ...}}``; empty when
+        the run did not detect (a supplied plan) or collection is disabled
+        (``VIDEOWIPE_PERF_STATS=0``). Measurement only.
+        """
+        return copy.deepcopy(self._last_detection_stats)
+
+    def _begin_stats(self):
+        return perfstats.start()
+
+    def _end_stats(self, handle) -> dict:
+        stats = perfstats.finish(handle)
+        self._last_detection_stats = stats
+        return copy.deepcopy(stats)
 
     def _reset_agent_decision(self, mask=None, plan=None):
         self._last_agent_decision = {
@@ -505,10 +528,16 @@ class WipeEngine:
             det = detector or self._detector
             t_detect_start = time.monotonic()
             if self.task == "clean":
-                wipe_plan = self._resolve_clean_plan(
-                    plan, video, det, targets, intent, agent, regions,
-                    detect_mode, ocr, output, confirm,
-                )
+                stats_handle = self._begin_stats()
+                try:
+                    wipe_plan = self._resolve_clean_plan(
+                        plan, video, det, targets, intent, agent, regions,
+                        detect_mode, ocr, output, confirm,
+                    )
+                finally:
+                    detection_stats = self._end_stats(stats_handle)
+                if detection_stats:
+                    bm["timing"]["detection_stats"] = detection_stats
                 self._last_warnings = list(wipe_plan.warnings)
                 self._active_plan = wipe_plan
                 self._save_agent_decision(output)
@@ -770,6 +799,7 @@ class WipeEngine:
         self._active_cancellation = cancellation or CancellationToken()
         self._active_progress = on_progress
         self._reset_agent_decision()
+        stats_handle = self._begin_stats()
         try:
             self._emit_progress(ProgressEvent("prepare", 0, 1))
             os.makedirs(output_dir, exist_ok=True)
@@ -806,6 +836,7 @@ class WipeEngine:
         except _ProgressCallbackError as exc:
             raise exc.cause
         finally:
+            self._end_stats(stats_handle)
             self._active_cancellation = None
             self._active_progress = None
             self._run_lock.release()
@@ -821,6 +852,7 @@ class WipeEngine:
                                   code="ENGINE_BUSY", retryable=True)
         self._active_cancellation = cancellation
         self._active_progress = on_progress
+        stats_handle = self._begin_stats()
         try:
             self._check_cancelled()
             if self._detector is None:
@@ -836,6 +868,7 @@ class WipeEngine:
         except _ProgressCallbackError as exc:
             raise exc.cause
         finally:
+            self._end_stats(stats_handle)
             self._active_cancellation = None
             self._active_progress = None
             self._run_lock.release()

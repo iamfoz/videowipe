@@ -3,6 +3,8 @@
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+from videowipe import perfstats
+
 
 class _SkipAborted(Exception):
     """Raised inside a skip whose sibling has already failed."""
@@ -68,6 +70,7 @@ def skip_frames(reader, count: int, check_cancelled=None) -> None:
     if advance is None:
         def advance():
             return reader.read()[0]
+    perfstats.add("frames_grabbed", count)
     for decoded in range(count):
         if check_cancelled is not None:
             check_cancelled()
