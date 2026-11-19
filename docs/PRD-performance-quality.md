@@ -589,9 +589,9 @@ One branch per group, each from upstream, each independently mergeable (C5).
 | Order | Branch | Contents | Gate |
 |---|---|---|---|
 | 1 | `perf/instrumentation` | P0-1, P0-2; then record P0-3 on the Mac | — |
-| 2 | `perf/refine-exact` | P1-1, P1-2, P1-8 | equality tests |
-| 3 | `perf/server-exact` | P1-3, P1-4, P1-5 | equality tests |
-| 4 | `perf/plan-masks` | P1-6 | equality tests |
+| 2 | `perf/refine-exact` | P1-1, P1-2, P1-8 (done) | equality tests |
+| 3 | `perf/server-exact` | P1-3, P1-4, P1-5 (done) | equality tests |
+| 4 | `perf/plan-masks` | P1-6 (done) | equality tests |
 | 5 | `perf/mps` | P1-7 (done), P2-1 | C4 + 15% bar |
 | 6 | `perf/detector-calls` | P2-3, P2-4 | C3 baselines |
 | 7 | `fix/output-fidelity` | Q-1 (minimum), Q-2, Q-4 (warning), Q-10 | ffprobe comparisons |
@@ -601,6 +601,32 @@ One branch per group, each from upstream, each independently mergeable (C5).
 
 Steps 2–4 are safe to start immediately after step 1; nothing in them changes
 results. Steps 5, 6 and 9 must not be merged without their gate numbers.
+
+### Phase 1 status
+
+Implemented on the four branches above (P1-7 on `perf/mps`). Verified by
+oracle tests that embed the original functions, and by an end-to-end clean of
+a 150-frame 1080p clip with upstream and with every fork branch merged: the
+plan, mask file and output video are byte-identical. Not yet measured on the
+reference Mac — step 1 (instrumentation and the P0-3 baseline) is still open
+and is needed before Phase 2.
+
+Known differences from upstream behaviour, all outside the results:
+
+- Refine no longer raises for a file that is short only after the last
+  candidate segment, and sends one final progress event instead of per-frame
+  events for that unread tail.
+- The windowed mask blur (P1-6) is used only when a one-off self-test proves
+  it bit-identical on the running machine; `VIDEOWIPE_MASK_WINDOW_BLUR`
+  (`auto`, `on`, `off`) overrides it. Its alignment constants were found on
+  x86; on Apple Silicon the self-test decides.
+- `PATCH /review` also computes whether anything is removed, so the page need
+  not request a mask on every playback tick; after a reload one `/mask`
+  request per revision remains.
+- The source hash is remembered per process, keyed by path, size,
+  modification time and inode.
+- The first thumbnail request decodes to the last evidence frame and caches
+  all of them.
 
 ## 14. Open questions
 
