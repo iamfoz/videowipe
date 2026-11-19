@@ -378,29 +378,98 @@ class ResultMarkRequest(BaseModel):
     status: str = Field(pattern=r"^(seen|issue)$")
 
 
+class _MaskEntry:
+    """Revision-stable result of loading a reviewed plan and projecting its masks."""
+
+    def __init__(self, key: tuple):
+        self.key = key
+        self.lock = threading.Lock()
+        self.plan = None
+        self.new_targets = False
+        self.masks = None  # (feather_radius, union, temporal)
+
+
+_MASK_CACHE: dict[str, _MaskEntry] = {}  # one entry per job, least recently used first
+_MASK_CACHE_LIMIT = 4
+_MASK_CACHE_LOCK = threading.Lock()
+
+
+def _mask_entry(job_id: str, key: tuple) -> _MaskEntry:
+    with _MASK_CACHE_LOCK:
+        entry = _MASK_CACHE.pop(job_id, None)
+        if entry is None or entry.key != key:
+            entry = _MaskEntry(key)
+        _MASK_CACHE[job_id] = entry
+        while len(_MASK_CACHE) > _MASK_CACHE_LIMIT:
+            _MASK_CACHE.pop(next(iter(_MASK_CACHE)))
+        return entry
+
+
+def _file_signature(path: Path) -> tuple:
+    try:
+        stat = path.stat()
+    except OSError:
+        return ()
+    return (stat.st_size, stat.st_mtime_ns)
+
+
+def _reviewed_masks(job: Job, revision: int, frame_index: int | None = None):
+    """Return ``(plan, union, temporal)`` for the job's review at *revision*.
+
+    Only the cheap state checks run under ``job.lock``; plan loading and mask
+    projection happen outside it and are cached per job and review revision.
+    """
+    with job.lock:
+        if revision != job.review_revision or not job.final_plan_ready:
+            raise HTTPException(status_code=409, detail='mask revision is not ready')
+        if job.reviewed_plan_path and job.compiled_review_revision == revision:
+            source, body = _job_file(job, job.reviewed_plan_path), None
+        else:
+            body = ConfirmRequest(**(job.overrides or {}))
+            source = _plan_path(job)
+        key = (revision, body is None, str(source), _file_signature(source),
+               json.dumps(job.overrides, sort_keys=True, default=str))
+    entry = _mask_entry(job.id, key)
+    with entry.lock:
+        if entry.plan is None:
+            if body is None:
+                plan, new_targets = load_wipe_plan(str(source)), False
+            else:
+                plan, _ = _reviewed_plan(job, body, allow_empty=True, plan_path=source)
+                machine = load_wipe_plan(str(source))
+                new_targets = bool({t.id for t in plan.remove_tracks} - {t.id for t in machine.remove_tracks})
+            entry.plan, entry.new_targets = plan, new_targets
+    if entry.new_targets:
+        raise HTTPException(status_code=409, detail='新增目标需先试擦确认出现时间')
+    plan = entry.plan
+    if frame_index is not None and frame_index >= plan.source.frame_count:
+        raise HTTPException(status_code=400, detail='frame outside source')
+    radius = _get_engine()._task_impl.feather_radius
+    with entry.lock:
+        if entry.masks is None or entry.masks[0] != radius:
+            entry.masks = (radius, *execution_masks(plan, radius))
+    return plan, entry.masks[1], entry.masks[2]
+
+
 @app.get('/jobs/{job_id}/mask')
 def actual_mask(job_id: str, frame_index: int = Query(ge=0), revision: int = Query(ge=0)):
     job = get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail='job not found')
-    with job.lock:
-        if revision != job.review_revision or not job.final_plan_ready:
-            raise HTTPException(status_code=409, detail='mask revision is not ready')
-        if job.reviewed_plan_path and job.compiled_review_revision == revision:
-            plan = load_wipe_plan(str(_job_file(job, job.reviewed_plan_path)))
-        else:
-            plan, _ = _reviewed_plan(job, ConfirmRequest(**(job.overrides or {})), allow_empty=True)
-            machine = load_wipe_plan(str(_plan_path(job)))
-            if {t.id for t in plan.remove_tracks} - {t.id for t in machine.remove_tracks}:
-                raise HTTPException(status_code=409, detail='新增目标需先试擦确认出现时间')
-        if frame_index >= plan.source.frame_count:
-            raise HTTPException(status_code=400, detail='frame outside source')
-        union, temporal = execution_masks(plan, _get_engine()._task_impl.feather_radius)
-        alpha = temporal(frame_index) if temporal else union[:, :, 0]
-        ok, png = cv2.imencode('.png', np.rint(alpha * 255).astype(np.uint8))
-        if not ok:
-            raise HTTPException(status_code=500, detail='mask encoding failed')
-        return Response(png.tobytes(), media_type='image/png', headers={'Cache-Control': 'no-store', 'X-Has-Removal': str(bool(union.any())).lower()})
+    _, union, temporal = _reviewed_masks(job, revision, frame_index)
+    alpha = temporal(frame_index) if temporal else union[:, :, 0]
+    ok, png = cv2.imencode('.png', np.rint(alpha * 255).astype(np.uint8))
+    if not ok:
+        raise HTTPException(status_code=500, detail='mask encoding failed')
+    return Response(png.tobytes(), media_type='image/png', headers={'Cache-Control': 'no-store', 'X-Has-Removal': str(bool(union.any())).lower()})
+
+
+def _has_removal(job: Job, revision: int) -> bool | None:
+    """The ``X-Has-Removal`` value for *revision*, or None if no mask can be built for it."""
+    try:
+        return bool(_reviewed_masks(job, revision)[1].any())
+    except Exception:
+        return None
 
 
 @app.get('/jobs/{job_id}/result-review')
@@ -603,9 +672,9 @@ def editable_preview_image(job_id: str):
     return FileResponse(_job_file(job, path), media_type="image/jpeg")
 
 
-def _reviewed_plan(job: Job, body: ConfirmRequest, *, allow_empty=False):
+def _reviewed_plan(job: Job, body: ConfirmRequest, *, allow_empty=False, plan_path=None):
     try:
-        plan = load_wipe_plan(str(_plan_path(job)))
+        plan = load_wipe_plan(str(plan_path or _plan_path(job)))
     except (InvalidInputError, OSError, ValueError) as exc:
         raise HTTPException(status_code=409, detail="job plan is invalid") from exc
     try:
@@ -651,7 +720,10 @@ def review(job_id: str, body: ReviewRequest):
         _save_review(job, body.overrides, allow_empty=True)
         if job.review_revision == before:
             job.commit(review_revision=job.review_revision + 1)
-    return job.snapshot()
+    snapshot = job.snapshot()
+    # Same value /mask reports for this revision, so the page need not fetch a mask to learn it.
+    snapshot["has_removal"] = _has_removal(job, snapshot["review_revision"])
+    return snapshot
 
 
 def _prepare_execution(job: Job, plan, run_dir):
