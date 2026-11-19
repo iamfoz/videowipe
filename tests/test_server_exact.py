@@ -423,3 +423,178 @@ async function refreshMask(){''' + body + r'''
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
     subprocess.run(["node", "-e", harness], check=True)
+
+
+# ── P1-5: hash the source once ───────────────────────────────────────────────
+
+import hashlib  # noqa: E402
+import os  # noqa: E402
+import time  # noqa: E402
+from concurrent.futures import ThreadPoolExecutor  # noqa: E402
+
+from videowipe import plan as plan_module  # noqa: E402
+
+
+@pytest.fixture()
+def hash_reads(monkeypatch):
+    """Record every file that _sha256_file actually opens and reads."""
+    monkeypatch.setattr(plan_module, "_SHA256_MEMO", {})
+    opened = []
+    real_open = open
+
+    def counting_open(path, *args, **kwargs):
+        opened.append(os.fspath(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(plan_module, "open", counting_open, raising=False)
+    return opened
+
+
+def _age(path, seconds=3600):
+    stamp = time.time() - seconds
+    os.utime(path, (stamp, stamp))
+
+
+@pytest.mark.parametrize("size", [0, 1, (1 << 20) - 1, 1 << 20, (1 << 20) + 1, 3 * (1 << 20) + 17])
+def test_sha256_file_matches_hashlib(tmp_path, hash_reads, size):
+    path = tmp_path / "blob.bin"
+    path.write_bytes(os.urandom(size))
+    expected = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert plan_module._sha256_file(str(path)) == expected
+    _age(path)
+    assert plan_module._sha256_file(str(path)) == expected
+    assert jobs.source_hash(path) == expected
+
+
+def test_unchanged_file_is_hashed_once_by_every_caller(tmp_path, hash_reads):
+    path = tmp_path / "source.bin"
+    path.write_bytes(os.urandom(5000))
+    _age(path)
+    expected = hashlib.sha256(path.read_bytes()).hexdigest()
+    for caller in (plan_module._sha256_file, jobs.source_hash, plan_module._sha256_file, jobs.source_hash):
+        assert caller(str(path)) == expected
+    assert hash_reads == [str(path)]
+    # Reached through a different spelling of the same path (relative, symlink).
+    link = tmp_path / "link.bin"
+    link.symlink_to(path)
+    assert plan_module._sha256_file(str(link)) == expected
+    assert plan_module._sha256_file(str(tmp_path / "." / "source.bin")) == expected
+    assert hash_reads == [str(path)]
+
+
+def test_recently_written_file_is_not_trusted_until_it_settles(tmp_path, hash_reads):
+    path = tmp_path / "fresh.bin"
+    path.write_bytes(b"first")
+    first = plan_module._sha256_file(str(path))
+    # Same size, and the filesystem may not have moved the timestamp: must be re-read.
+    stamp = path.stat().st_mtime_ns
+    path.write_bytes(b"other")
+    os.utime(path, ns=(stamp, stamp))
+    assert plan_module._sha256_file(str(path)) == hashlib.sha256(b"other").hexdigest() != first
+    assert len(hash_reads) == 2
+
+
+def test_replaced_file_is_hashed_again(tmp_path, hash_reads):
+    path = tmp_path / "source.bin"
+    path.write_bytes(b"a" * 4096)
+    _age(path, 3600)
+    original = plan_module._sha256_file(str(path))
+    # Different content, same size, mtime bumped.
+    path.write_bytes(b"b" * 4096)
+    _age(path, 1800)
+    changed = plan_module._sha256_file(str(path))
+    assert changed == hashlib.sha256(b"b" * 4096).hexdigest() and changed != original
+    # Different size.
+    path.write_bytes(b"b" * 4097)
+    _age(path, 900)
+    assert plan_module._sha256_file(str(path)) == hashlib.sha256(b"b" * 4097).hexdigest()
+    # Replaced by rename (new inode), same size.
+    replacement = tmp_path / "other.bin"
+    replacement.write_bytes(b"c" * 4097)
+    _age(replacement, 900)
+    os.replace(replacement, path)
+    assert plan_module._sha256_file(str(path)) == hashlib.sha256(b"c" * 4097).hexdigest()
+    assert len(hash_reads) == 4
+    # A deleted file still raises instead of answering from the memo.
+    path.unlink()
+    with pytest.raises(FileNotFoundError):
+        plan_module._sha256_file(str(path))
+
+
+def test_sha256_memo_is_bounded_and_thread_safe(tmp_path, hash_reads, monkeypatch):
+    monkeypatch.setattr(plan_module, "_SHA256_MEMO_LIMIT", 5)
+    paths = []
+    for number in range(12):
+        path = tmp_path / f"f{number}.bin"
+        path.write_bytes(bytes([number]) * 100)
+        _age(path)
+        paths.append(path)
+    with ThreadPoolExecutor(8) as pool:
+        digests = list(pool.map(lambda p: plan_module._sha256_file(str(p)), paths * 6))
+    assert digests == [hashlib.sha256(p.read_bytes()).hexdigest() for p in paths * 6]
+    assert len(plan_module._SHA256_MEMO) <= 5
+
+
+def test_upload_digest_is_incremental_and_off_the_event_loop(client, tmp_path, monkeypatch, hash_reads):
+    test_client, _ = client
+    video = tmp_path / "upload.mp4"
+    _write_test_video(video)
+    loop_threads, update_threads = [], []
+    real_remember = server_app.remember_sha256
+    monkeypatch.setattr(server_app, "remember_sha256",
+                        lambda *a: loop_threads.append(threading.get_ident()) or real_remember(*a))
+
+    class Spy:
+        def __init__(self):
+            self._digest = hashlib.sha256()
+
+        def update(self, data):
+            update_threads.append(threading.get_ident())
+            self._digest.update(data)
+
+        def hexdigest(self):
+            return self._digest.hexdigest()
+
+    monkeypatch.setattr(server_app, "hashlib", type("H", (), {"sha256": staticmethod(Spy), "__getattr__": lambda s, n: getattr(hashlib, n)})())
+    body = _post_video(test_client, video).json()
+    job = jobs.get_job(body["id"])
+    assert job.source_sha256 == hashlib.sha256(video.read_bytes()).hexdigest()
+    assert "upload_s" in body["timings"] or "upload_s" in job.timings
+    assert update_threads and loop_threads and loop_threads[0] not in update_threads
+    _wait_for_state(test_client, job.id, "preview_ready")
+    # Seeded by the upload, so the plan's source identity never re-read the file.
+    assert str(job.video_path) not in hash_reads
+
+
+def test_source_is_not_re_hashed_across_upload_plan_and_run(client, tmp_path, hash_reads):
+    test_client, fake = client
+    video = tmp_path / "once.mp4"
+    _write_test_video(video)
+    job_id = _post_video(test_client, video).json()["id"]
+    _wait_for_state(test_client, job_id, "preview_ready")
+    source = jobs.get_job(job_id).video_path
+    assert test_client.post(f"/jobs/{job_id}/confirm", json={}).status_code == 200
+    _wait_for_state(test_client, job_id, "done")
+    assert any(call["method"] == "run" for call in fake.calls)
+    assert [path for path in hash_reads if path == str(source)] == []
+
+
+def test_replaced_source_still_fails_the_input_changed_check(client, tmp_path, hash_reads):
+    test_client, _ = client
+    video = tmp_path / "before.mp4"
+    _write_test_video(video)
+    job_id = _post_video(test_client, video).json()["id"]
+    _wait_for_state(test_client, job_id, "preview_ready")
+    job = jobs.get_job(job_id)
+    source = Path(job.video_path)
+    replacement = tmp_path / "after.mp4"
+    _write_test_video(replacement, frames=9)
+    source.write_bytes(replacement.read_bytes())
+    stamp = time.time() + 30
+    os.utime(source, (stamp, stamp))
+    assert test_client.post(f"/jobs/{job_id}/confirm", json={}).status_code == 200
+    deadline = time.time() + 5
+    while time.time() < deadline and test_client.get(f"/jobs/{job_id}").json()["state"] != "error":
+        time.sleep(0.05)
+    failed = test_client.get(f"/jobs/{job_id}").json()
+    assert failed["state"] == "error" and "source sha256 mismatch" in failed["error"]

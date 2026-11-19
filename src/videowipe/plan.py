@@ -12,6 +12,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from bisect import bisect_right
 from dataclasses import dataclass, field
@@ -38,12 +40,55 @@ _COARSE_GAP_SECONDS = 2.0       # plan Rule 8: temporal-coarseness warning thres
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
+# Digests of files seen unchanged in this process, so a source is read once
+# rather than once per plan load, run and cache identity. Keyed by the file's
+# identity and stat, so a replaced or rewritten file is always hashed again.
+_SHA256_MEMO: dict[tuple, str] = {}
+_SHA256_MEMO_LIMIT = 32
+_SHA256_MEMO_LOCK = threading.Lock()
+# A file modified this recently could still change without its mtime moving
+# (coarse timestamps), so a freshly computed digest is not trusted yet.
+_SHA256_SETTLE_NS = 2_000_000_000
+
+
+def _sha256_key(path) -> tuple | None:
+    try:
+        stat = os.stat(path)
+        return (os.path.realpath(path), stat.st_size, stat.st_mtime_ns, stat.st_ino)
+    except OSError:
+        return None
+
+
+def _sha256_store(key: tuple, digest: str) -> None:
+    with _SHA256_MEMO_LOCK:
+        _SHA256_MEMO.pop(key, None)
+        _SHA256_MEMO[key] = digest
+        while len(_SHA256_MEMO) > _SHA256_MEMO_LIMIT:
+            _SHA256_MEMO.pop(next(iter(_SHA256_MEMO)))
+
+
+def remember_sha256(path, digest: str) -> None:
+    """Record a digest computed while the file was written (the caller vouches for it)."""
+    key = _sha256_key(path)
+    if key is not None:
+        _sha256_store(key, digest)
+
+
 def _sha256_file(path: str, chunk: int = 1 << 20) -> str:
+    key = _sha256_key(path)
+    if key is not None:
+        with _SHA256_MEMO_LOCK:
+            known = _SHA256_MEMO.get(key)
+        if known is not None:
+            return known
     h = hashlib.sha256()
     with open(path, "rb") as fh:
         for block in iter(lambda: fh.read(chunk), b""):
             h.update(block)
-    return h.hexdigest()
+    digest = h.hexdigest()
+    if key is not None and _sha256_key(path) == key and time.time_ns() - key[2] > _SHA256_SETTLE_NS:
+        _sha256_store(key, digest)
+    return digest
 
 
 def _assert_bare_name(child: str) -> None:

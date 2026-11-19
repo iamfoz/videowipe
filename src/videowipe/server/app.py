@@ -22,6 +22,7 @@ import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, StrictInt
 
 from videowipe.api import CancellationToken, ProgressEvent, WipeRequest
@@ -31,6 +32,7 @@ from videowipe.export import hevc_path, install as install_export_ui, output_cod
 from videowipe.plan import (
     JSON_FILENAME,
     load_wipe_plan,
+    remember_sha256,
     save_wipe_plan,
     validate_plan,
     execution_masks,
@@ -545,18 +547,26 @@ async def create(
     input_path = Path(job.output_dir) / f"input{suffix}"
     try:
         started = time.perf_counter()
+        digest = hashlib.sha256()
+
+        def write_chunk(fh, chunk):
+            fh.write(chunk)
+            digest.update(chunk)
+
         with input_path.open("wb") as fh:
             while True:
                 chunk = await video.read(1024 * 1024)
                 if not chunk:
                     break
-                fh.write(chunk)
+                await run_in_threadpool(write_chunk, fh, chunk)
+        source_sha256 = digest.hexdigest()
+        remember_sha256(input_path, source_sha256)
         with job.lock:
             job.video_path = str(input_path)
             job.original_filename = original_filename
             job.phase = "plan"
             job.intent = intent
-            job.source_sha256 = source_hash(input_path)
+            job.source_sha256 = source_sha256
             job.timings["upload_s"] = time.perf_counter() - started
         publish_last(job)
         threading.Thread(target=_run_preview, args=(job, intent), daemon=True).start()
