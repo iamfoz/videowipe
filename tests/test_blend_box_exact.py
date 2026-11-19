@@ -843,3 +843,22 @@ def test_small_box_composition_is_much_faster_than_the_old_code(capsys):
         print(f"\ncomposition per 1080p frame, small box: old {old_s * 1e3:.2f} ms, "
               f"new {new_s * 1e3:.2f} ms, {old_s / new_s:.1f}x")
     assert old_s / new_s >= 2.0
+
+
+def test_window_resize_can_be_forced_off(monkeypatch):
+    """With the override off the upscaler never takes a cropped window, and
+    the result still equals the whole-band resize."""
+    from videowipe.inpainters import sttn
+
+    rng = np.random.RandomState(7)
+    pred = rng.randint(0, 256, size=(120, 640, 3), dtype=np.uint8)
+    box = (40, 200, 600, 900)  # band-relative rows 40..200, columns 600..900
+    expected = cv2.resize(pred, (1920, 360))[40:200, 600:900][:, :, ::-1].astype(np.float32)
+
+    monkeypatch.setenv("VIDEOWIPE_BLEND_WINDOW_RESIZE", "off")
+    forced_off = sttn._BandUpscaler(1920)
+    monkeypatch.setattr(forced_off, "_window", lambda *a, **k: pytest.fail("window used"))
+    assert np.array_equal(forced_off.crop(pred, 360, box), expected)
+
+    monkeypatch.setenv("VIDEOWIPE_BLEND_WINDOW_RESIZE", "auto")
+    assert np.array_equal(sttn._BandUpscaler(1920).crop(pred, 360, box), expected)
