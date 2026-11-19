@@ -48,6 +48,9 @@ except ImportError:  # Windows
 
 os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
+# Measure the code beside this script, not whichever copy happens to be installed.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
 import cv2
 
 from videowipe.api import WipeRequest
