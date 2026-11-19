@@ -41,6 +41,7 @@ from typing import Callable, Iterable, Iterator, List, Literal, Protocol, runtim
 import cv2
 import numpy as np
 
+from videowipe import perfstats
 from videowipe.errors import ProcessingCancelledError
 
 logger = logging.getLogger(__name__)
@@ -300,6 +301,7 @@ class DBNetDetector:
         return boxes
 
     def _detect_hl(self, frame: np.ndarray) -> List[TextBox]:
+        perfstats.forward("hl")
         detections, confidences = self._hl_model.detect(frame)
         boxes: list[TextBox] = []
         for pts, conf in zip(detections, confidences):
@@ -335,6 +337,7 @@ class DBNetDetector:
             swapRB=True,
         )
         self._net.setInput(blob)
+        perfstats.forward("manual")
         out = self._net.forward()
 
         # Probability map: (1, 1, H', W')  or  (1, 2, H', W')
@@ -940,7 +943,7 @@ def _band_fallback_detect(
             for variant in variants:
                 prepared = _prepare_band_variant(crop, variant)
                 try:
-                    boxes = detector.detect(prepared)
+                    boxes = perfstats.detect(detector, prepared)
                 except Exception:
                     continue
                 for box in boxes:
@@ -1238,9 +1241,10 @@ def detect_clean_candidates(
     logo_frames: list[np.ndarray] = []
     freq = None
 
-    for sample_index, frame in _iter_sample_frames_with_indices(
+    perfstats.begin("coarse_sampling")
+    for sample_index, frame in perfstats.counted(_iter_sample_frames_with_indices(
         video_path, sample_count, check_cancelled=check_cancelled,
-    ):
+    )):
         if first_frame is None:
             first_frame = frame
             h, w = frame.shape[:2]
@@ -1252,7 +1256,7 @@ def detect_clean_candidates(
         if not detect_text or detector is None:
             continue
         try:
-            boxes = detector.detect(frame)
+            boxes = perfstats.detect(detector, frame)
         except ProcessingCancelledError:
             raise
         except Exception as exc:
@@ -1274,6 +1278,7 @@ def detect_clean_candidates(
         if score > best_preview_score:
             best_preview_score = score
             best_preview = frame
+    perfstats.end()
 
     if first_frame is None:
         raise ValueError(f"No frames could be read from: {video_path}")
@@ -1372,18 +1377,22 @@ def detect_clean_candidates(
             )
 
     if subtitle_fallback != "off" and detect_text and detector is not None:
-        fallback_raw = _band_fallback_detect(
-            (
-                frame
-                for _, frame in _iter_sample_frames_with_indices(
-                    video_path, sample_count, check_cancelled=check_cancelled,
-                )
-            ),
-            detector,
-            mode=subtitle_fallback,
-            consistency=consistency,
-            frame_shape=(h, w),
-        )
+        perfstats.begin("band_fallback")
+        try:
+            fallback_raw = _band_fallback_detect(
+                (
+                    frame
+                    for _, frame in perfstats.counted(_iter_sample_frames_with_indices(
+                        video_path, sample_count, check_cancelled=check_cancelled,
+                    ))
+                ),
+                detector,
+                mode=subtitle_fallback,
+                consistency=consistency,
+                frame_shape=(h, w),
+            )
+        finally:
+            perfstats.end()
         main_bboxes = [c.bbox for c in candidates]
         surviving = [
             fc for fc in fallback_raw
@@ -1539,6 +1548,7 @@ def _contrast_recovered_boxes(
     (b) be agreed on by at least two independent restorations; single-variant
     hits stay negative. Returns boxes mapped back to frame coordinates.
     """
+    perfstats.add("recovery_calls")
     x1, y1, x2, y2 = bbox
     height, width = frame.shape[:2]
     margin_y = max(8, (y2 - y1 + 1) // 4)
@@ -1551,7 +1561,7 @@ def _contrast_recovered_boxes(
 
     def band_boxes(variant_crop: np.ndarray) -> list[tuple[TextBox, tuple[int, int, int, int]]]:
         found: list[tuple[TextBox, tuple[int, int, int, int]]] = []
-        for box in detector.detect(variant_crop):
+        for box in perfstats.detect(detector, variant_crop, recovery=True):
             bx1, by1, bx2, by2 = _bbox(box.points, crop.shape[1], crop.shape[0])
             fx1, fy1, fx2, fy2 = bx1 + cx1, by1 + cy1, bx2 + cx1, by2 + cy1
             center_x, center_y = (fx1 + fx2) / 2.0, (fy1 + fy2) / 2.0
@@ -1586,6 +1596,8 @@ def _contrast_recovered_boxes(
             per_variant.append((family, entries))
             # Other glyphs may only agree with a later variant; one match
             # must not stop evidence collection for the rest of the band.
+        if confirmed:
+            perfstats.add("recovery_hits")
         return [confirmed[coords] for coords in sorted(confirmed)]
     finally:
         if manual_only is not None:
@@ -1672,6 +1684,9 @@ def refine_temporal_presence(
                 for candidate_id, candidate in candidates.items()
                 if any(start <= frame_index < end for start, end in segments[candidate_id])
             ]
+            perfstats.add(
+                "frames_converted" if active or not can_grab else "frames_grabbed"
+            )
             if active:
                 if can_grab:
                     ok, frame = cap.retrieve()
@@ -1697,7 +1712,7 @@ def refine_temporal_presence(
                     detect_failed = False
                 else:
                     try:
-                        boxes = detector.detect(frame)
+                        boxes = perfstats.detect(detector, frame)
                         detect_failed = False
                     except ProcessingCancelledError:
                         raise
@@ -1726,6 +1741,7 @@ def refine_temporal_presence(
                         # positive evidence from contrast-restored variants of
                         # this candidate's own band. Failed detection above
                         # never gets a second chance.
+                        perfstats.mark("recovery_frames", frame_index)
                         try:
                             recovered = _contrast_recovered_boxes(
                                 detector, frame, candidate.bbox,
@@ -1755,6 +1771,7 @@ def refine_temporal_presence(
                 progress(frame_index, expected_frame_count)
     finally:
         cap.release()
+        perfstats.add("frames_present", len(set().union(*(row[3] for row in state.values()))))
         # The values the per-frame rebuilds used to leave behind, including
         # when the loop is interrupted part-way.
         for candidate in candidates.values():

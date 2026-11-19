@@ -26,6 +26,7 @@ from videowipe.detect import (
     resolve_requested_targets,
     select_clean_candidates,
 )
+from videowipe import perfstats
 from videowipe.errors import ProcessingCancelledError
 from videowipe.video import skip_frames
 from videowipe.plan import (Segment, Source, WipePlan, build_wipe_plan, compute_source,
@@ -489,8 +490,10 @@ def _recover_descenders(plan, tracks, video_path, check_cancelled):
                 # No track looks at this frame; advance without converting it.
                 if not reader.grab():
                     raise ValueError(f'Cannot decode subtitle outline frame {i}')
+                perfstats.add('frames_grabbed')
                 continue
             ok, frame = reader.read()
+            perfstats.add('frames_converted')
             if not ok:
                 raise ValueError(f'Cannot decode subtitle outline frame {i}')
             for track in tracks:
@@ -579,6 +582,7 @@ def _add_spatial_segments(plan, result, selected_ids=None, *, video_path=None, c
             needs_probe.add(index)
     if needs_probe and video_path is not None:
         reader = cv2.VideoCapture(video_path)
+        perfstats.begin("boundary_probe")
         try:
             if not reader.isOpened():
                 raise ValueError("Cannot open video for local subtitle boundary checks")
@@ -590,6 +594,7 @@ def _add_spatial_segments(plan, result, selected_ids=None, *, video_path=None, c
                 ok, frame = reader.read()
                 if not ok:
                     raise ValueError(f"Cannot decode subtitle boundary frame {index}")
+                perfstats.add("frames_converted")
                 next_frame = index + 1
                 if index in evidence and index not in missing_all:
                     # Keep the recorded normal-pass evidence; add only the
@@ -598,7 +603,7 @@ def _add_spatial_segments(plan, result, selected_ids=None, *, video_path=None, c
                     detect_failed = False
                 else:
                     try:
-                        boxes = result.detector.detect(frame)
+                        boxes = perfstats.detect(result.detector, frame)
                         detect_failed = False
                     except ProcessingCancelledError:
                         raise
@@ -617,6 +622,7 @@ def _add_spatial_segments(plan, result, selected_ids=None, *, video_path=None, c
                             boxes, track.bbox, frame.shape[1], frame.shape[0],
                         ):
                             continue
+                        perfstats.mark("recovery_frames", index)
                         try:
                             boxes = boxes + _contrast_recovered_boxes(result.detector, frame, track.bbox)
                         except ProcessingCancelledError:
@@ -629,7 +635,10 @@ def _add_spatial_segments(plan, result, selected_ids=None, *, video_path=None, c
                             )
                             break
                 evidence[index] = boxes
+                if boxes:
+                    perfstats.add("frames_present")
         finally:
+            perfstats.end()
             reader.release()
 
     # Extend segment boundaries across the probed uncertainty zone when every
@@ -733,7 +742,8 @@ def _add_spatial_segments(plan, result, selected_ids=None, *, video_path=None, c
                   and 'bbox-override' not in t.decision_reason
                   and (selected_ids is None or t.id in selected_ids)
                   and t.spatial_segments is not None]
-        _recover_descenders(plan, tracks, video_path, check_cancelled)
+        with perfstats.phase("descender_recovery"):
+            _recover_descenders(plan, tracks, video_path, check_cancelled)
 
 
 def _finalize_result(
@@ -767,14 +777,15 @@ def _finalize_result(
     if not refine:
         return provisional
 
-    warnings = refine_temporal_presence(
-        video_path,
-        result,
-        {track.id: track.segments for track in provisional.remove_tracks},
-        source.frame_count,
-        progress=progress,
-        check_cancelled=check_cancelled,
-    )
+    with perfstats.phase("refine"):
+        warnings = refine_temporal_presence(
+            video_path,
+            result,
+            {track.id: track.segments for track in provisional.remove_tracks},
+            source.frame_count,
+            progress=progress,
+            check_cancelled=check_cancelled,
+        )
     plan = build_wipe_plan(
         result.candidates,
         result.sample_indices,
@@ -811,12 +822,13 @@ def refine_review(video_path, machine_plan, reviewed_plan, evidence_path, detect
                                          for box in boxes]
                              for index, boxes in evidence["boxes"].items()},
     )
-    warnings = refine_temporal_presence(
-        video_path, result,
-        {track.id: track.segments for track in machine_plan.tracks if track.id in new_ids},
-        machine_plan.source.frame_count, progress=progress,
-        check_cancelled=check_cancelled,
-    )
+    with perfstats.phase("review_refine"):
+        warnings = refine_temporal_presence(
+            video_path, result,
+            {track.id: track.segments for track in machine_plan.tracks if track.id in new_ids},
+            machine_plan.source.frame_count, progress=progress,
+            check_cancelled=check_cancelled,
+        )
     refined = build_wipe_plan(
         candidates, result.sample_indices, len(result.sample_indices),
         machine_plan.source, result.frame_shape, explicit_remove_ids=new_ids,
