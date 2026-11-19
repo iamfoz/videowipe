@@ -265,7 +265,7 @@ class STTNInpainter:
                 else:
                     candidate_reader.release()
             if context_start:
-                from videowipe.video import skip_frames
+                from videowipe.video import skip_frames, skip_frames_concurrently
 
                 advanced = 0
 
@@ -279,9 +279,12 @@ class STTNInpainter:
                             job.progress(0, last - first)
                     advanced += 1
 
-                skip_frames(reader, context_start, check_prefix)
                 if output_reader is not None:
-                    skip_frames(output_reader, context_start, check_prefix)
+                    skip_frames_concurrently(
+                        (reader, output_reader), context_start, check_prefix
+                    )
+                else:
+                    skip_frames(reader, context_start, check_prefix)
 
             # Backend instances are shared runtime objects; keep inference
             # serialized until the backend declares a thread-safety contract.
@@ -327,7 +330,13 @@ class STTNInpainter:
                     frames = {k: [] for k in range(len(mode))}
 
                     for local_index in range(end_f - start_f):
-                        success, image = reader.read()
+                        if (output_reader is not None and not missing_modes
+                                and hasattr(reader, "grab")):
+                            # No band needs these pixels (inactive segment or
+                            # all cache hits); advance the decoder only.
+                            success, image = reader.grab(), None
+                        else:
+                            success, image = reader.read()
                         if not success:
                             raise ValueError(
                                 f"STTN inference decoded {start_f + local_index} "
