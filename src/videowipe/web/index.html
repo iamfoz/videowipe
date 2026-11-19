@@ -321,7 +321,7 @@
     let reviewRevision=0, finalPlanReady=false, saveQueue=Promise.resolve(), saveError=null, saving=0, saveGeneration=0;
     let previewLoading=false, keyboardSave=null;
     let segmentDrafts={}, protections=[], undoStack=[], savedReview=null, resultRevision=null, resultReviewRevision=null, loopWindow=null;
-    let maskEpoch=0, maskTimer=null, maskHasRemoval=true;
+    let maskEpoch=0, maskTimer=null, maskHasRemoval=true, knownRemoval=null;
     const playbackLease=crypto.randomUUID();
     const canEdit=()=>reviewLoaded&&["pending","preview_ready","done"].includes(state);
     const evidenceImages = new Map();
@@ -360,7 +360,7 @@
         try {
           if(jobId!==currentJobId||generation!==saveGeneration)return;
           const data=await request(`/jobs/${jobId}/review`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_revision:reviewRevision,overrides})});
-          if(jobId!==currentJobId)return;if(recordUndo&&savedReview&&JSON.stringify(savedReview)!==JSON.stringify(overrides))undoStack.push(structuredClone(savedReview));savedReview=structuredClone(overrides);reviewRevision=data.review_revision;saveError=null;if(view==="clean")$("viewLabel").textContent=resultReviewRevision===reviewRevision?"清理结果":"上次结果 · 修改尚未导出";
+          if(jobId!==currentJobId)return;if(recordUndo&&savedReview&&JSON.stringify(savedReview)!==JSON.stringify(overrides))undoStack.push(structuredClone(savedReview));savedReview=structuredClone(overrides);reviewRevision=data.review_revision;knownRemoval=typeof data.has_removal==='boolean'?{jobId,revision:data.review_revision,tracks,value:data.has_removal}:null;saveError=null;if(view==="clean")$("viewLabel").textContent=resultReviewRevision===reviewRevision?"清理结果":"上次结果 · 修改尚未导出";
         } catch(error) {
           if(jobId!==currentJobId)return;saveError=error;
           if(error.status===409){saveGeneration++;reviewLoaded=false;await loadPreview(jobId);saveError=null;notify("另一页面已修改决定，已载入当前版本，请核对后继续。","error");}
@@ -738,10 +738,13 @@
       const canvas=$('maskCanvas');canvas.hidden=true;
       if(!currentJobId||!finalPlanReady||saving||busy()||view==='trial')return;
       const jobId=currentJobId,revision=reviewRevision,epoch=++maskEpoch,frame=Math.max(0,Math.min(source.frame_count-1,Math.floor(position()*source.fps)));
+      // With the overlay off the mask itself is not needed, only whether anything is removed at this revision.
+      if(!$('showMask').checked&&knownRemoval&&knownRemoval.jobId===jobId&&knownRemoval.revision===revision&&knownRemoval.tracks===tracks){maskHasRemoval=knownRemoval.value;renderActions();$('maskState').textContent='';return;}
+      const seenTracks=tracks;
       try{const response=await fetch(`/jobs/${jobId}/mask?frame_index=${frame}&revision=${revision}`);
         if(epoch!==maskEpoch||jobId!==currentJobId||revision!==reviewRevision)return;
         if(!response.ok){const data=await response.json();throw new Error(data.detail||'范围尚未就绪');}
-        maskHasRemoval=response.headers.get('X-Has-Removal')!=='false';renderActions();
+        maskHasRemoval=response.headers.get('X-Has-Removal')!=='false';knownRemoval={jobId,revision,tracks:seenTracks,value:maskHasRemoval};renderActions();
         if(!$('showMask').checked){$('maskState').textContent='';return;}
         const bitmap=await createImageBitmap(await response.blob());
         if(epoch!==maskEpoch||revision!==reviewRevision||saving){bitmap.close();return;}
