@@ -14,10 +14,13 @@ servers updated to 1.24.0).
 ## Branches
 
 Every branch starts from upstream `20872d4` unless marked as stacked. Any
-combination merges without conflicts (66 of 66 pairs checked earlier; the two
-newest branches checked against every other and each other), and with all of
-them merged the suite passes (1,107 tests) and an end-to-end clean is
-byte-identical to upstream's output.
+combination merges without conflicts (66 of 66 pairs checked earlier; the
+three newest branches checked against every other), and with all of them
+merged the suite passes (1,146 tests) and an end-to-end clean of a
+constant-rate clip is byte-identical to upstream's output. With
+`fix/output-fidelity` merged, a variable-rate source (the full
+`chinese1.mp4` is one) is deliberately no longer identical: its frames keep
+their own timestamps.
 
 | Branch | Head | Contents |
 |---|---|---|
@@ -34,6 +37,7 @@ byte-identical to upstream's output.
 | `perf/blend-box` | `4133f14` | **Stacked on `perf/instrumentation`.** Compositing only inside the mask's box |
 | `perf/skip-windows` | `8c451f7` | **Stacked on `perf/blend-box`.** Model windows that cannot reach an emitted pixel are skipped; partial prediction-cache entries; `scripts/skip_windows_estimate.py` |
 | `perf/recovery-reuse` | `fa4503c` | **Stacked on `perf/detector-calls`.** Per-run memo for repeated contrast-recovery calls; `scripts/recovery_reuse_probe.py` |
+| `fix/output-fidelity` | `48cc050` | Q-1: source timestamps kept for variable-rate video (`src/videowipe/timing.py`, `VIDEOWIPE_SOURCE_TIMING`, `docs/source-timing.md`). Q-2, Q-4 (warning) and Q-10 are to follow on this branch |
 | `docs/performance-prd` | this branch | The PRD and this file |
 | `main` | `a708c67` | Upstream plus the Switchyard MCP setup only; no feature branch is merged into it |
 | `chore/switchyard-mcp` | `f1d326d` | Merged to `main`; can be deleted |
@@ -88,9 +92,29 @@ identical work, so quote the boundary-probe figure. All other counters are
 identical on and off. No disturbed runs. Nothing from Phases 1 and 2 is left
 to measure except the long-file planning re-run noted above.
 
-Not started: Phase 3 of the PRD (output fidelity: variable-frame-rate timing,
-audio copy, metadata and chapters, colour tags, 10-bit/HDR, the OCR
-wrong-frame crop, duration-scaled sampling) and the web UI items.
+## Phase 3 (authorised by the owner; Q-1 first)
+
+**Q-1 is done and pushed** on `fix/output-fidelity`; details in the PRD's
+Phase 3 status. `chinese1.mp4` turned out to be variable-rate (one 0.12 s
+gap), so upstream put its picture up to two frames from the sound. The branch
+pipes frames to ffmpeg as a minimal Matroska stream with each frame's own
+timestamp when the source is variable; constant-rate sources are untouched
+and byte-identical.
+
+Outstanding on Q-1:
+
+- **Not yet run on the Mac's ffmpeg** (built on 6.1.1). The owner runs, on
+  `fix/output-fidelity`: `python -m pytest -q tests/test_source_timing.py`,
+  and optionally a clean of `chinese1.mp4`, which should print "Keeping the
+  source's frame timestamps". A failed self-test falls back with a warning.
+- The web UI and server still convert seconds to frames with one constant
+  rate (0 to 2 frames off on `chinese1`). Not authorised or started; it needs
+  the timestamp table in the plan or served to the UI.
+
+Not started: the rest of Phase 3 (audio copy, metadata and chapters, colour
+tags, 10-bit/HDR, the OCR wrong-frame crop, duration-scaled sampling) and the
+web UI items. The PRD's plan puts Q-2, Q-4 (warning) and Q-10 on
+`fix/output-fidelity` after Q-1.
 
 ## Working rules agreed with the owner
 
@@ -120,7 +144,8 @@ wrong-frame crop, duration-scaled sampling) and the web UI items.
 ## Practical notes
 
 - Tests: `python -m pytest -q` from the repository root (pytest adds `src`).
-- End-to-end reference: make a 6-second clip
+- End-to-end reference (the clip is constant-rate even when cut from
+  `chinese1.mp4`, because the re-encode fills its gap): make a 6-second clip
   (`ffmpeg -i input/detext_examples/chinese1.mp4 -t 6 -c:v libx264 -crf 18 -an clip.mp4`),
   clean it with upstream `20872d4` (`PYTHONPATH=src python -m videowipe.cli
   clean clip.mp4 -o base`), and compare `clip_clean.mp4`, `wipe_plan.json`
@@ -142,4 +167,5 @@ wrong-frame crop, duration-scaled sampling) and the web UI items.
   `VIDEOWIPE_OUTPUT_CODEC`, `VIDEOWIPE_PRECISION`, `VIDEOWIPE_PERF_STATS`,
   `VIDEOWIPE_MASK_WINDOW_BLUR`, `VIDEOWIPE_BLEND_WINDOW_RESIZE`,
   `VIDEOWIPE_BLEND_CACHE_MB`, `VIDEOWIPE_BAND_CROP_BUDGET_MB`,
-  `VIDEOWIPE_SKIP_WINDOWS`, `VIDEOWIPE_RECOVERY_REUSE`.
+  `VIDEOWIPE_SKIP_WINDOWS`, `VIDEOWIPE_RECOVERY_REUSE`,
+  `VIDEOWIPE_SOURCE_TIMING`.

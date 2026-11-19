@@ -675,7 +675,7 @@ One branch per group, each from upstream, each independently mergeable (C5).
 | 4 | `perf/plan-masks` | P1-6 (done) | equality tests |
 | 5 | `perf/mps` | P1-7 (done), P2-1 | C4 + 15% bar |
 | 6 | `perf/detector-calls` | P2-3, P2-4 | C3 baselines |
-| 7 | `fix/output-fidelity` | Q-1 (minimum), Q-2, Q-4 (warning), Q-10 | ffprobe comparisons |
+| 7 | `fix/output-fidelity` | Q-1 (done, the proper fix), Q-2, Q-4 (warning), Q-10 | ffprobe comparisons |
 | 8 | `fix/ocr-crop` | Q-5 | decision baseline |
 | 9 | `feat/duration-sampling` | Q-6 | ground-truth clip + baselines |
 | 10 | `perf/skip-windows`, `perf/recovery-reuse` | P2-2, recovery reuse (done) | equality tests |
@@ -856,6 +856,97 @@ speed, and would need its own evaluation.
 
 Still open in recovery: per-variant reuse (blank or saturated variants repeat
 across frames; a little more than the above) — not built.
+
+### Phase 3 status
+
+| Item | Branch | Outcome |
+|---|---|---|
+| Q-1 variable-frame-rate sources | `fix/output-fidelity` | Done (the proper fix, not the minimum). Constant-rate sources are exact: same ffmpeg arguments and pipe bytes, output byte-identical to upstream's. Variable-rate sources keep each frame's own timestamp. `VIDEOWIPE_SOURCE_TIMING=auto\|off\|on`. **Not yet run on the reference Mac's ffmpeg** (built and tested on 6.1.1). See below. |
+
+**Q-1 evidence.** The hypothesis is confirmed on a bundled sample:
+`chinese1.mp4` is variable-rate (589 frame gaps of 0.04 s and one of 0.12 s
+after the first frame; `r_frame_rate` 25/1, `avg_frame_rate` 14775/593;
+OpenCV reports 24.9157 fps). Upstream re-times it on the average-rate grid,
+which puts the picture up to 0.08 s (two frames) from its real time while the
+audio keeps true timing. `english1.mp4` and `others.mp4` are exactly constant.
+
+**Q-1 change** (`src/videowipe/timing.py`, two small hooks in
+`STTNInpainter.inpaint`, `docs/source-timing.md`). One ffprobe call lists the
+packet timestamps (demux only). A source is constant when one of its declared
+rates fits every frame within one time-base tick, so millisecond-rounded
+Matroska at 30000/1001 counts as constant. For a variable source whose packet
+count equals the job's frame count (C1: frames are matched by ordinal only),
+frames are piped as a minimal Matroska stream carrying each frame's timestamp
+instead of raw video; trials cut the audio at the real time of their first
+frame; an offset between the video and audio streams is kept. Anything else
+(probe failure, count mismatch, a first frame before the file start, an
+ffmpeg that cannot do it, an unrecognised command) falls back to upstream's
+behaviour with a one-line warning. The ffmpeg options are chosen by running
+ffmpeg once on a small off-grid stream and checking the timestamps come out
+exact, not by version (C6).
+
+Two facts found on the way, both measured on ffmpeg 6.1.1: MP4 output
+defaults to constant-rate (frames are duplicated to fill gaps) unless
+`-fps_mode passthrough` is given; and even then every frame is rounded up to
+a grid of one over the guessed frame rate unless `-enc_time_base -1` is also
+given (a frame at 0.54 s came out at 0.56 s). The same applies to the second
+(HEVC/MKV) output of `feat/h265-output`, so the options are inserted there
+too, from this branch, without editing that one.
+
+**Q-1 results.**
+
+- Acceptance test (generated clip, 160 frames with two multi-frame gaps,
+  flashes and audio clicks at the same instants, run through the real
+  `inpaint` path with a stub model): output packet timestamps equal the
+  source's for every frame and the flash-to-click offsets are exact at the
+  start, middle and end. With the switch `off` the flashes land 0.1, 0.5 and
+  0.29 s from their clicks. Making `auto` behave as `off` fails 14 of the 39
+  new tests.
+- Real clean of a 3-second cut of `chinese1.mp4` with its gap and audio:
+  maximum video timestamp error 0.0 s (0.079 s with the switch off), audio
+  unchanged.
+- Constant-rate exactness: a 6-second `english1` clip cleaned with upstream
+  and with the branch gives byte-identical `clip_clean.mp4` and masks and an
+  equal plan; the ffmpeg command is checked against upstream's embedded as an
+  oracle.
+- Suite: 539 passed on the branch (500 on upstream, plus 39 new); 1,146
+  passed with all fourteen fork branches merged; `git merge-tree` is clean
+  against each of the other thirteen.
+- Probe cost: 0.07 s for `chinese1`; 0.64 s in total for a generated
+  70,000-frame MP4. Not measured on a multi-gigabyte Matroska file, where the
+  cost is reading the file.
+- The PRD's "minimum" (pass the exact rational rate) was measured and is not
+  needed: at 24000/1001, 30000/1001 and 60000/1001 the outputs with the
+  OpenCV float and with the rational are byte-identical.
+
+**Q-1 limits and open points.**
+
+- ffmpeg 7 and 8 are untested. If the self-test fails there the job falls
+  back with a warning, so the failure is safe; the owner should run
+  `python -m pytest -q tests/test_source_timing.py` on the Mac.
+- In timestamp mode the encoder sees different rate information, so the
+  cleaned pixels differ slightly from a constant-rate encode of the same
+  frames (about 45 dB on the real clip). A full clean of `chinese1.mp4` is
+  therefore no longer byte-identical to upstream's, by design. The 6-second
+  reference clip in SAVEPOINT is constant-rate (the re-encode fills the gap)
+  and still is.
+- Without `fix/webm-frame-count`, OpenCV's frame count for Matroska is an
+  estimate, so variable-rate WebM/MKV falls back with a warning; with that
+  branch merged it works (tested).
+- **Not changed, still constant-rate arithmetic:** seconds-to-frame
+  conversion in the web UI (`web/index.html`: overlay visibility, mask fetch,
+  mark-issue, seek step), `server/app.py` (`_trial_range`,
+  `_recommended_trial`, the trial handler's `start_seconds` and
+  `duration_seconds`) and `server/review.py` (`seconds_to_frames`). On
+  `chinese1.mp4` these are 0 to 2 frames off, worst at the start; the bound
+  grows with larger or more gaps. Cleaned and trial videos used to sit on the
+  same average-rate grid as that arithmetic; they now follow the source
+  timeline, so the mismatch there is the same as in the source view. The web
+  warning about variable-rate positioning was left as it is, because
+  positioning is still approximate. A fix needs the timestamp table in the
+  plan or served to the UI: a separate item.
+- The messages are English lines on stdout; they are not shown in the web UI
+  and have no catalogue entries on `feat/i18n-english`.
 
 ## 14. Open questions
 
