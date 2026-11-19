@@ -298,6 +298,10 @@ class _BandUpscaler:
         self.ori_w = ori_w
         self._windows = {}
         self._checked = {}
+        # ``VIDEOWIPE_BLEND_WINDOW_RESIZE=off`` always resizes the whole band
+        # (exact by construction); anything else lets verified windows be used.
+        self._windowed = os.environ.get(
+            "VIDEOWIPE_BLEND_WINDOW_RESIZE", "auto").strip().lower() != "off"
 
     @staticmethod
     def _axis(lo, hi, src, dst):
@@ -369,7 +373,7 @@ class _BandUpscaler:
         ``astype(float32)`` would."""
         by0, by1, x0, x1 = box
         window = None
-        if pred.dtype == np.uint8 and pred.ndim == 3:
+        if self._windowed and pred.dtype == np.uint8 and pred.ndim == 3:
             window = self._window(pred.shape, band_h, box)
         if window is None:
             resized = cv2.resize(pred, (self.ori_w, band_h))
