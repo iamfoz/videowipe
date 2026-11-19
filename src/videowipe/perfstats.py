@@ -52,6 +52,7 @@ COUNTERS = (
     "recovery_calls",        # _contrast_recovered_boxes invocations
     "recovery_detect_calls", # detect() calls made inside recovery
     "recovery_hits",         # recovery invocations that returned >= 1 box
+    "recovery_reused",       # recovery invocations answered from an identical earlier one
     "recovery_variants_skipped",  # recovery variants not run: outcome already fixed
     "frames_present",        # frames found present for a candidate
     "band_crops_stored",     # sampled frames whose band crops the fallback reused

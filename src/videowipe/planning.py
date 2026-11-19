@@ -26,7 +26,7 @@ from videowipe.detect import (
     resolve_requested_targets,
     select_clean_candidates,
 )
-from videowipe import perfstats
+from videowipe import perfstats, recovery_reuse
 from videowipe.errors import ProcessingCancelledError
 from videowipe.video import skip_frames
 from videowipe.plan import (Segment, Source, WipePlan, build_wipe_plan, compute_source,
@@ -746,6 +746,7 @@ def _add_spatial_segments(plan, result, selected_ids=None, *, video_path=None, c
             _recover_descenders(plan, tracks, video_path, check_cancelled)
 
 
+@recovery_reuse.scoped  # one recovery memo per run, dropped on return
 def _finalize_result(
     video_path: str,
     result: CleanDetectionResult,
@@ -800,6 +801,7 @@ def _finalize_result(
     return plan
 
 
+@recovery_reuse.scoped  # one recovery memo per run, dropped on return
 def refine_review(video_path, machine_plan, reviewed_plan, evidence_path, detector,
                   progress=None, check_cancelled=None, output_dir=None):
     """Refine newly selected keep tracks without changing reviewed masks."""
