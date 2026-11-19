@@ -41,7 +41,7 @@ from typing import Callable, Iterable, Iterator, List, Literal, Protocol, runtim
 import cv2
 import numpy as np
 
-from videowipe import memory, perfstats
+from videowipe import memory, perfstats, recovery_reuse
 from videowipe.errors import ProcessingCancelledError
 
 logger = logging.getLogger(__name__)
@@ -273,6 +273,17 @@ class DBNetDetector:
         self._cached_frame_dims = dims
         self._cached_input_size = result
         return result
+
+    def reuse_token(self) -> tuple:
+        """Everything outside the pixels that decides what :meth:`detect` returns.
+
+        The network, thresholds and input policy are fixed for the life of the
+        object; the only state a call reads and can change is ``_manual_only``
+        (the input-size cache and the high-level model's input parameters are
+        rewritten from the frame size before every use). Two calls on equal
+        pixels with equal tokens therefore return equal boxes.
+        """
+        return ("dbnet", self._manual_only)
 
     def detect(self, frame: np.ndarray) -> List[TextBox]:
         """Run text detection on a single frame."""
@@ -1679,6 +1690,19 @@ def _contrast_recovered_boxes(
     # Flip state of the shared detector must not leak: the manual fallback is
     # a per-call choice here, not a mode switch for the rest of the video.
     manual_only = getattr(detector, "_manual_only", None)
+    # Inside a planning run the answer to an identical question (same pixels,
+    # bbox, frame size and detector state) is the one already given: refine and
+    # the boundary probes ask about the same bands. No detector call is made,
+    # so the counters say "reused" rather than pretending to have detected.
+    memo = recovery_reuse.current()
+    memo_key = memo.key(detector, bbox, frame, crop) if memo is not None else None
+    if memo_key is not None:
+        reused = memo.get(detector, memo_key)
+        if reused is not None:
+            perfstats.add("recovery_reused")
+            if reused:
+                perfstats.add("recovery_hits")
+            return reused
     try:
         per_variant: list[tuple[str, list[tuple[TextBox, tuple[int, int, int, int]]]]] = []
         confirmed: dict[tuple[int, int, int, int], TextBox] = {}
@@ -1710,7 +1734,10 @@ def _contrast_recovered_boxes(
             # must not stop evidence collection for the rest of the band.
         if confirmed:
             perfstats.add("recovery_hits")
-        return [confirmed[coords] for coords in sorted(confirmed)]
+        recovered = [confirmed[coords] for coords in sorted(confirmed)]
+        if memo_key is not None:
+            memo.put(detector, memo_key, recovered)   # only completed calls
+        return recovered
     finally:
         if manual_only is not None:
             detector._manual_only = manual_only  # noqa: SLF001
