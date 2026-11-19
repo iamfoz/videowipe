@@ -7,8 +7,9 @@ A hand-over for a new session. Read this, then `docs/PRD-performance-quality.md`
 
 `iamfoz/videowipe` is a fork of `KKenny0/videowipe` (local removal of burned-in
 subtitles and watermarks from video). Upstream's last commit is `20872d4`.
-`main` is upstream plus one fork-only commit (`f1d326d`: `.mcp.json` and the
-vendored Switchyard MCP servers in `.switchyard-mcp/`).
+`main` is upstream plus two fork-only commits (`f1d326d`: `.mcp.json` and the
+vendored Switchyard MCP servers in `.switchyard-mcp/`; `a708c67`: those
+servers updated to 1.24.0).
 
 ## Branches
 
@@ -34,7 +35,9 @@ byte-identical to upstream's output.
 | `perf/skip-windows` | `8c451f7` | **Stacked on `perf/blend-box`.** Model windows that cannot reach an emitted pixel are skipped; partial prediction-cache entries; `scripts/skip_windows_estimate.py` |
 | `perf/recovery-reuse` | `fa4503c` | **Stacked on `perf/detector-calls`.** Per-run memo for repeated contrast-recovery calls; `scripts/recovery_reuse_probe.py` |
 | `docs/performance-prd` | this branch | The PRD and this file |
+| `main` | `a708c67` | Upstream plus the Switchyard MCP setup only; no feature branch is merged into it |
 | `chore/switchyard-mcp` | `f1d326d` | Merged to `main`; can be deleted |
+| `chore/switchyard-mcp-1.24` | `a708c67` | Merged to `main` (fast-forward); can be deleted |
 | `iamfoz/beautiful-ramanujan-cw1ggy` | `f9b21f3` | Stale early branch; the owner should delete it (a cloud session cannot) |
 
 The owner also keeps a local `combined` branch that merges the feature
@@ -124,8 +127,9 @@ wrong-frame crop, duration-scaled sampling) and the web UI items.
   `python scripts/perf_baseline.py VIDEO -o OUT [--runs 3] [--no-full] [--trial-seconds 3]`,
   inside the project's virtual environment (`source .venv/bin/activate`).
 - Cloud sessions: the Default environment allows `switchyard.forryan.net`
-  and holds its API key. Pushes to `main` from a cloud session are refused by
-  an automatic safety check; the owner pushes to `main`. Deleting remote
+  and holds its API key. A fast-forward push to `main` from a cloud session
+  worked when the owner asked for it explicitly; do not push to `main`
+  otherwise. Deleting remote
   branches is also refused.
 - Switchyard MCP (`switchyard_code`, `switchyard_handles`) loads from
   `.mcp.json` only in sessions that start on a branch containing it (`main`).
