@@ -53,6 +53,8 @@ COUNTERS = (
     "recovery_detect_calls", # detect() calls made inside recovery
     "recovery_hits",         # recovery invocations that returned >= 1 box
     "frames_present",        # frames found present for a candidate
+    "band_crops_stored",     # sampled frames whose band crops the fallback reused
+    "band_second_pass",      # band fallbacks that had to decode the file again
 )
 
 _FALSE = {"0", "off", "false", "no"}

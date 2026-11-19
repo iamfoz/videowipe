@@ -420,9 +420,12 @@ def test_engine_plan_reports_each_phase_and_isolates_runs(tmp_path):
     assert refine["frames_converted"] == PLAN_FRAMES and refine["detect_calls"] == 0
     assert refine["frames_present"] == PLAN_FRAMES
     assert refine["wall_s"] > 0
-    # The light band fallback runs two variants of the bottom band per sample.
+    # The light band fallback runs two variants of the bottom band per sample,
+    # from the crops kept while sampling: it no longer decodes the file again.
     fallback = first["band_fallback"]
-    assert fallback["frames_converted"] == PLAN_FRAMES and fallback["detect_calls"] == 2 * PLAN_FRAMES
+    assert fallback["frames_converted"] == 0 and fallback["frames_grabbed"] == 0
+    assert fallback["band_crops_stored"] == PLAN_FRAMES and fallback["band_second_pass"] == 0
+    assert fallback["detect_calls"] == 2 * PLAN_FRAMES
     assert first["descender_recovery"]["frames_converted"] == PLAN_FRAMES
 
     second = plan("two")
