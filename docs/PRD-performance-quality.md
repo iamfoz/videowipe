@@ -107,6 +107,14 @@ length. The default is right; do not raise it for speed.
   (`plans/STTN_INFERENCE_SPEED.md`, gate section).
 - C5. **Fork hygiene.** One branch per workstream from upstream, each
   mergeable with the others in any order, minimal edits to upstream files.
+- C6. **Capability-gated, never machine-gated.** The reference machine is an
+  M2 Pro with 32 GB, but nothing may be tuned to it. A feature is chosen by
+  what the running machine reports or demonstrably does — a backend
+  capability, a short self-test, measured memory and core counts — never by
+  chip name or a fixed constant sized for the reference machine. Anything that
+  trades memory for speed scales with available memory; anything that depends
+  on a newer chip or library is used when present and skipped when absent.
+  Every such choice has an override so a user can force it on or off.
 
 Requirements are tagged: **[exact]** output is bit-identical and only tests for
 equality are needed; **[gated]** output changes and C3 or C4 applies.
@@ -297,6 +305,13 @@ Effort: small. No behaviour change. Do this before anything in §6–§7.
 - **Risk.** Attention scores are divided by `sqrt(d_k·h·w)` with products up
   to 76,800 (`models/sttn.py:142-143`): check for half-precision overflow.
   Speed-up on M1–M4 comes from memory traffic, not doubled throughput.
+- **Selection (C6).** Do not decide by chip. Enable half precision when the
+  installed torch supports MPS autocast and a one-off self-test on the loaded
+  model passes the numeric check; record the choice in the benchmark metadata
+  and the cache identity. Provide an explicit precision setting (`auto`,
+  `float32`, `float16`). On the M2 Pro the gain may be modest; chips with
+  faster half-precision paths then benefit without a code change, and a
+  machine where it is slower or inaccurate keeps float32.
 - **Acceptance.** C4 quality gate passes on the three samples; hot median of
   three runs at least 15% faster than P0-3 (upstream's own bar for keeping a
   change). If it fails either test, close as "tried, not adopted" and record
@@ -545,6 +560,10 @@ cancellation granularity.
   `feat/h265-output` branch), not for the pipeline's internal H.264 copy.
 - Unknown until measured on the target Mac: the half-precision speed-up, VP9
   decode cost, and detector latency per call.
+- Reference machine: M2 Pro, 32 GB. Memory-for-speed options (keeping a
+  segment's full-resolution frames instead of decoding twice, prediction-cache
+  limits, pipeline queue depth in P2-5) must size themselves from available
+  memory, so 16 GB machines stay safe and 64 GB+ machines gain more (C6).
 
 ## 12. Web UI responsiveness
 
@@ -573,7 +592,7 @@ One branch per group, each from upstream, each independently mergeable (C5).
 | 2 | `perf/refine-exact` | P1-1, P1-2, P1-8 | equality tests |
 | 3 | `perf/server-exact` | P1-3, P1-4, P1-5 | equality tests |
 | 4 | `perf/plan-masks` | P1-6 | equality tests |
-| 5 | `perf/mps` | P1-7, P2-1 | C4 + 15% bar |
+| 5 | `perf/mps` | P1-7 (done), P2-1 | C4 + 15% bar |
 | 6 | `perf/detector-calls` | P2-3, P2-4 | C3 baselines |
 | 7 | `fix/output-fidelity` | Q-1 (minimum), Q-2, Q-4 (warning), Q-10 | ffprobe comparisons |
 | 8 | `fix/ocr-crop` | Q-5 | decision baseline |
@@ -585,8 +604,9 @@ results. Steps 5, 6 and 9 must not be merged without their gate numbers.
 
 ## 14. Open questions
 
-1. Which Apple Silicon chip and how much memory is the target machine? It
-   bounds what P2-1 can deliver.
+1. ~~Which Apple Silicon chip and how much memory is the target machine?~~
+   **Answered: M2 Pro, 32 GB.** This is the reference machine for P0-3 only;
+   see C6 — later chips and larger memory must benefit without retuning.
 2. Is a long clip with known subtitle timings available for Q-6?
 3. Should these go upstream (they are mostly upstream bugs and limits) or stay
    on the fork?
