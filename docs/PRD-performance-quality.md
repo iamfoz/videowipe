@@ -162,9 +162,60 @@ the detection counters, prints a summary and writes `perf_baseline.json`.
 exposes the positioning cost. Use `--runs 3` for a steady-state median, and
 `--no-full` to measure planning alone on a long file. Not captured: time from
 upload to `preview_ready` in the web flow (the script times the engine
-stages). **Still open: running it on the reference Mac.**
+stages). The reference Mac run is recorded below.
 
-First data point (Linux, 4 cores, ONNX on CPU, 150 frames at 1080p): planning
+### Reference baseline (P0-3): M2 Pro, 12 cores, 32 GB, torch 2.15 on MPS, float32
+
+Recorded with Phase 1 and the instrumentation merged.
+
+**Short clip** — `chinese1.mp4`, 1080p H.264, 591 frames, two active bands
+(top-left watermark and bottom subtitle), median of 3 runs, 135.5 s in total:
+
+| Stage | Seconds | Share | Per frame |
+|---|---|---|---|
+| Planning | 44.2 | 32.6% | 74.8 ms |
+| · coarse sampling | 2.6 | 1.9% | |
+| · band fallback | 4.6 | 3.4% | |
+| · refine | 26.5 | 19.5% | |
+| · boundary probes | 9.5 | 7.0% | |
+| · descender recovery | 0.8 | 0.6% | |
+| Inpainting | 90.9 | 67.0% | 153.8 ms |
+| · model inference | 81.1 | 59.8% | 137.1 ms |
+| · blend | 6.3 | 4.7% | 10.7 ms |
+| · pipe write | 1.5 | 1.1% | 2.6 ms |
+| · both decodes | 1.4 | 1.0% | |
+
+A 3-second trial at the end of the clip: 16.5 s, of which positioning (500
+frames skipped) 0.29 s and model inference 13.3 s. First model load in a
+process: 7.4 s; warm: 0.3 s.
+
+Detector work: 954 `detect()` calls, one forward pass each (the double
+forward in P2-3 does **not** occur here). Contrast recovery ran on 28 refine
+frames and 23 probe frames: 306 of the 804 detector calls in those two phases
+(38%), and **found nothing in any of them**. At roughly 45 ms a call that is
+about 13 s of the 44 s of planning.
+
+**Long file** — 1080p AV1, 70,819 frames (49 minutes), planning only: 102 s,
+all of it two sequential decode passes at ~0.6 ms a frame (coarse sampling
+44 s, band fallback 58 s) to run the detector on 100 frames. Refine had
+nothing to confirm and, with P1-2, read no frames.
+
+**What the baseline changes in this plan**
+
+- Inference is 60% of a run on MPS, not the 75–84% seen on CPU, and planning
+  is a third. Planning work is worth more than §2 implied.
+- P2-1 remains the largest single lever: at 137 ms a frame, a two-band clean
+  of the long file is about 2.7 hours of model time.
+- P2-3: recovery is 38% of detector calls in refine and probes with a 0% hit
+  rate on this clip, so gating it is the main planning saving. Its
+  double-forward part can be dropped: it was not observed.
+- P2-4: merging band fallback into sampling halves planning on the long file
+  (58 s of 102 s) and saves 10% of planning on the short one.
+- P2-6: blending is 6.3 s (4.7%); worth doing, after the above.
+- Decode, resize, cache and positioning are each under 1%: leave them
+  (P2-5's overlap would gain at most a few percent).
+
+Earlier data point (Linux, 4 cores, ONNX on CPU, 150 frames at 1080p): planning
 25 s, of which band fallback 9.3 s (100 detector calls on 50 sampled frames),
 refine 7.6 s, coarse sampling 5.4 s, boundary probes 1.9 s; contrast recovery
 fired on 1 of 108 refined frames. That clip is dense dialogue, so it says
@@ -618,7 +669,7 @@ One branch per group, each from upstream, each independently mergeable (C5).
 
 | Order | Branch | Contents | Gate |
 |---|---|---|---|
-| 1 | `perf/instrumentation` (on `perf/refine-exact`) | P0-1, P0-2 (done); P0-3 script done, Mac run open | — |
+| 1 | `perf/instrumentation` (on `perf/refine-exact`) | P0-1, P0-2, P0-3 (done; baseline in §4) | — |
 | 2 | `perf/refine-exact` | P1-1, P1-2, P1-8 (done) | equality tests |
 | 3 | `perf/server-exact` | P1-3, P1-4, P1-5 (done) | equality tests |
 | 4 | `perf/plan-masks` | P1-6 (done) | equality tests |
