@@ -709,6 +709,26 @@ Known differences from upstream behaviour, all outside the results:
 - The first thumbnail request decodes to the last evidence frame and caches
   all of them.
 
+### Phase 2 status
+
+Built after the baseline, each on its own branch; verified with all fork
+branches merged (1,020 tests) and by an end-to-end clean whose plan, masks
+and output video are byte-identical to upstream's.
+
+| Item | Branch | Outcome |
+|---|---|---|
+| P2-1 half precision on MPS | `perf/mps` | Implemented behind `VIDEOWIPE_PRECISION` (`auto`, `float32`, `float16`). `auto` is unchanged. MPS use is guarded by an on-device numeric self-test with a float32 fallback. **Not yet measured on the reference Mac**: see `docs/precision.md` and `scripts/compare_clean_outputs.py`. `auto` switches to half precision on MPS only if the median of three runs is at least 15% faster and the comparison passes on the three samples. |
+| P2-4 band fallback without a second decode | `perf/detector-calls` (on `perf/instrumentation`) | Done, exact. The fallback runs from band crops kept while sampling, within a memory budget (`VIDEOWIPE_BAND_CROP_BUDGET_MB`), otherwise the old second pass. Probe and descender passes were not merged: the descender frame set depends on the probe results. |
+| P2-3(a) recovery pruning | `perf/detector-calls` | Done, exact for returned boxes. Only the sixth variant is provably redundant: 33 of 954 detector calls on the reference clip (3%). A detector error that only that call would raise is no longer seen. |
+| P2-3(b) recovery pre-gate | — | **Not built.** A brightness gate separated hits from misses on the three real samples but would have discarded 12 genuine recoveries on synthetic fades to black and mid-grey dissolves — the cases recovery exists for. No statistic separated all 275 recorded recoveries with a margin. |
+| P2-6 blend inside the mask's box | `perf/blend-box` (on `perf/instrumentation`) | Done, byte-identical pipe output. Blend time in a real clean fell from 2.2 s to 0.2–0.3 s on the Linux test machine (the reference Mac spent 6.3 s). Cropped upscaling is used only where a rounding argument and an on-machine check both agree; `VIDEOWIPE_BLEND_WINDOW_RESIZE=off` disables it. |
+
+Recovery remains about a third of detector calls in refine and probes on the
+reference clip. Candidates that do not need a gate: cheaper crop inputs
+(P2-3(c), behaviour-changing, needs baselines) and skipping a recovery whose
+band crop is bit-identical to the previous frame's after a negative result
+(exact).
+
 ## 14. Open questions
 
 1. ~~Which Apple Silicon chip and how much memory is the target machine?~~
