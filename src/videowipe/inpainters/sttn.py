@@ -264,7 +264,10 @@ class STTNInpainter:
                     output_reader = candidate_reader
                 else:
                     candidate_reader.release()
+            clock = time.perf_counter
+            prefix_skip_s = 0.0
             if context_start:
+                started_prefix = clock()
                 from videowipe.video import skip_frames, skip_frames_concurrently
 
                 advanced = 0
@@ -285,6 +288,15 @@ class STTNInpainter:
                     )
                 else:
                     skip_frames(reader, context_start, check_prefix)
+                prefix_skip_s = clock() - started_prefix
+
+            # Phase timers (P0-1). Each accumulates one coarse step so that
+            # the parts of prediction_s and composition_s can be told apart;
+            # they only measure and never change what is decoded or written.
+            decode_infer_s = resize_s = cache_read_s = model_s = cache_write_s = 0.0
+            decode_output_s = blend_s = pipe_write_s = mask_eval_s = 0.0
+            frames_read = frames_grabbed = output_frames_read = frames_written = 0
+            segments = segments_cached = segments_inferred = bands_inferred = windows = 0
 
             # Backend instances are shared runtime objects; keep inference
             # serialized until the backend declares a thread-safety contract.
@@ -298,9 +310,11 @@ class STTNInpainter:
 
                     # Cache only emitted masks. Keep all context frames whenever
                     # any emitted pixel in a band needs a prediction.
+                    segments += 1
                     segment_masks = {}
                     active_modes = set(range(len(mode)))
                     if job.frame_mask is not None:
+                        started_mask = clock()
                         active_modes = set()
                         for index in range(max(start_f, first), min(end_f, last)):
                             alpha = np.asarray(job.frame_mask(index))
@@ -315,28 +329,37 @@ class STTNInpainter:
                             for k, (top, bottom) in enumerate(mode):
                                 if k not in active_modes and np.any(alpha[top:bottom] != 0):
                                     active_modes.add(k)
+                        mask_eval_s += clock() - started_mask
 
                     prediction_started = time.monotonic()
                     comps = {}
                     keys = {}
                     if cache is not None:
+                        started_cache = clock()
                         for k in active_modes:
                             keys[k] = cache.key(start_f, end_f, *mode[k])
                             cached = cache.read(keys[k], end_f - start_f)
                             if cached is not None:
                                 comps[k] = cached
+                        cache_read_s += clock() - started_cache
+                        segments_cached += bool(comps)
                     missing_modes = active_modes - comps.keys()
                     frames_hr = [] if output_reader is None else None
                     frames = {k: [] for k in range(len(mode))}
 
                     for local_index in range(end_f - start_f):
+                        started_decode = clock()
                         if (output_reader is not None and not missing_modes
                                 and hasattr(reader, "grab")):
                             # No band needs these pixels (inactive segment or
                             # all cache hits); advance the decoder only.
                             success, image = reader.grab(), None
+                            frames_grabbed += 1
                         else:
                             success, image = reader.read()
+                            frames_read += 1
+                        started_resize = clock()
+                        decode_infer_s += started_resize - started_decode
                         if not success:
                             raise ValueError(
                                 f"STTN inference decoded {start_f + local_index} "
@@ -350,7 +373,9 @@ class STTNInpainter:
                                 image[from_h:to_h], (w, h),
                                 interpolation=cv2.INTER_LINEAR,
                             ).astype(np.float32))
+                        resize_s += clock() - started_resize
 
+                    started_model = clock()
                     futures = {
                         k: executor.submit(
                             _process_segment,
@@ -363,7 +388,17 @@ class STTNInpainter:
                     for k, future in futures.items():
                         comps[k] = future.result()
                         if cache is not None:
+                            started_write = clock()
+                            model_s += started_write - started_model
                             cache.write(keys[k], comps[k])
+                            started_model = clock()
+                            cache_write_s += started_model - started_write
+                    model_s += clock() - started_model
+                    segments_inferred += bool(futures)
+                    bands_inferred += len(futures)
+                    windows += sum(
+                        -(-len(frames[k]) // self.neighbor_stride) for k in futures
+                    )
                     prediction_s += time.monotonic() - prediction_started
                     if cache is not None and job.phase_progress is not None:
                         job.phase_progress('predict', min(end_f, last) - first, last - first,
@@ -371,6 +406,7 @@ class STTNInpainter:
                     composition_started = time.monotonic()
 
                     for j in range(end_f - start_f):
+                        started_output = clock()
                         if output_reader is not None:
                             success, frame_ori = output_reader.read()
                             if not success:
@@ -379,8 +415,11 @@ class STTNInpainter:
                                     f"expected {video_length}"
                                 )
                             output_decoded += 1
+                            output_frames_read += 1
                         else:
                             frame_ori = frames_hr[j]
+                        started_blend = clock()
+                        decode_output_s += started_blend - started_output
                         if not first <= start_f + j < last:
                             continue
                         # Per-frame temporal mask (global index start_f + j) when a
@@ -408,7 +447,11 @@ class STTNInpainter:
                         )
                         if job.dual:
                             frame = np.vstack([frame_ori, frame])
+                        started_write = clock()
+                        blend_s += started_write - started_blend
                         pipe.stdin.write(frame.tobytes())
+                        pipe_write_s += clock() - started_write
+                        frames_written += 1
 
                     composition_s += time.monotonic() - composition_started
                     if job.phase_progress is not None:
@@ -428,6 +471,30 @@ class STTNInpainter:
                 job.metrics.update(prediction_s=round(prediction_s, 4),
                                    composition_s=round(composition_s, 4),
                                    encoding_finalize_s=round(time.monotonic() - encoding_started, 4))
+                # P0-1 split. prediction_s ~ cache_read_s + decode_infer_s +
+                # resize_s + model_s + cache_write_s; composition_s ~
+                # decode_output_s + blend_s + pipe_write_s (pipe_write_s also
+                # covers frame.tobytes()). mask_eval_s lies outside both, and
+                # prefix_skip_s precedes inpainting_s.
+                job.metrics.update(
+                    prefix_skip_s=round(prefix_skip_s, 4),
+                    mask_eval_s=round(mask_eval_s, 4),
+                    cache_read_s=round(cache_read_s, 4),
+                    decode_infer_s=round(decode_infer_s, 4),
+                    resize_s=round(resize_s, 4),
+                    model_s=round(model_s, 4),
+                    cache_write_s=round(cache_write_s, 4),
+                    decode_output_s=round(decode_output_s, 4),
+                    blend_s=round(blend_s, 4),
+                    pipe_write_s=round(pipe_write_s, 4),
+                    prefix_frames=context_start,
+                    frames_read=frames_read, frames_grabbed=frames_grabbed,
+                    output_frames_read=output_frames_read,
+                    frames_written=frames_written,
+                    segments=segments, segments_cached=segments_cached,
+                    segments_inferred=segments_inferred,
+                    bands_inferred=bands_inferred, windows=windows,
+                )
                 if cache is not None:
                     job.metrics.update(prediction_hits=cache.hits, prediction_misses=cache.misses,
                                        prediction_corrupt=cache.corrupt, prediction_writes=cache.writes)
