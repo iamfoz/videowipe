@@ -31,7 +31,14 @@ class PredictionCache:
         payload = dict(self.identity, frames=[first, last], crop=[top, bottom])
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
-    def read(self, key, count):
+    def read(self, key, count, need=None):
+        """The stored frames (``None`` where one is not valid), or ``None``.
+
+        An entry may hold only some frames. ``need`` lists the frame indices
+        the caller will use (default: all of them); the entry counts as a hit
+        only when every one of them is valid. Otherwise it still comes back, so
+        the caller can keep its valid frames, but it is counted as a miss.
+        """
         path = self.directory / f"{key}.npz"
         if not path.exists():
             self.misses += 1
@@ -69,7 +76,11 @@ class PredictionCache:
                 raise ValueError("invalid prediction checksum")
             if hashlib.sha256(pixels.tobytes() + valid.tobytes()).digest() != checksum.tobytes():
                 raise ValueError("prediction checksum mismatch")
-            self.hits += 1
+            wanted = range(count) if need is None else need
+            if all(valid[i] for i in wanted):
+                self.hits += 1
+            else:
+                self.misses += 1
             return [pixels[i] if valid[i] else None for i in range(count)]
         except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
             self.corrupt += 1

@@ -482,21 +482,65 @@ def _write_frame(stream, frame):
         stream.write(frame.tobytes())
 
 
-def _process_segment(frames, backend, w, h, ref_length, neighbor_stride):
-    """Inpaint a batch of frames through the model (backend-agnostic)."""
+def _skip_windows_enabled():
+    """Whether windows that cannot affect an emitted pixel are skipped.
+
+    ``VIDEOWIPE_SKIP_WINDOWS=off`` computes every window, as before; anything
+    else (``auto``, ``on``) skips them.
+    """
+    return os.environ.get("VIDEOWIPE_SKIP_WINDOWS", "auto").strip().lower() != "off"
+
+
+def _window_layout(video_length, neighbor_stride):
+    """The frame ids covered by each model window of a full run, in order."""
+    return [
+        list(range(
+            max(0, f - neighbor_stride),
+            min(video_length, f + neighbor_stride + 1),
+        ))
+        for f in range(0, video_length, neighbor_stride)
+    ]
+
+
+def _windows_to_run(layout, needed):
+    """The windows of ``layout`` that touch a needed frame (all when ``None``)."""
+    if needed is None:
+        return layout
+    wanted = set(needed)
+    return [ids for ids in layout if not wanted.isdisjoint(ids)]
+
+
+def _count_windows(video_length, neighbor_stride, needed=None):
+    """``(run, total)`` windows for ``_process_segment`` with the same arguments."""
+    layout = _window_layout(video_length, neighbor_stride)
+    return len(_windows_to_run(layout, needed)), len(layout)
+
+
+def _process_segment(frames, backend, w, h, ref_length, neighbor_stride, needed=None):
+    """Inpaint a batch of frames through the model (backend-agnostic).
+
+    ``needed`` is a collection of local frame indices whose predictions the
+    caller will use; ``None`` means all of them. Every frame is still encoded
+    (reference frames come from the whole segment), but a window is skipped
+    when none of the frames it predicts is needed. A frame's prediction is the
+    mean over every window that covers it, so a frame that some covering window
+    skipped would get a different mean from a full run: it is returned as
+    ``None``. Every frame returned is therefore bit-identical to the same frame
+    of a full run, and every needed frame is among them.
+    """
     video_length = len(frames)
     feats = backend.encode(backend.preprocess(frames))
 
     comp_frames_np = np.zeros((video_length, h, w, 3), dtype=np.float32)
     counts = np.zeros((video_length,), dtype=np.int32)
 
-    for f in range(0, video_length, neighbor_stride):
-        neighbor_ids = [
-            i for i in range(
-                max(0, f - neighbor_stride),
-                min(video_length, f + neighbor_stride + 1),
-            )
-        ]
+    layout = _window_layout(video_length, neighbor_stride)
+    # Windows covering each frame in a full run.
+    coverage = np.zeros((video_length,), dtype=np.int32)
+    for neighbor_ids in layout:
+        coverage[neighbor_ids] += 1
+
+    for neighbor_ids in _windows_to_run(layout, needed):
         ref_ids = get_ref_index(neighbor_ids, video_length, ref_length)
 
         ids = neighbor_ids + ref_ids
@@ -508,7 +552,7 @@ def _process_segment(frames, backend, w, h, ref_length, neighbor_stride):
 
     comp_frames = []
     for idx in range(video_length):
-        if counts[idx]:
+        if counts[idx] and counts[idx] == coverage[idx]:
             comp_frames.append(np.clip(comp_frames_np[idx] / counts[idx], 0, 255).astype(np.uint8))
         else:
             comp_frames.append(None)
@@ -705,6 +749,8 @@ class STTNInpainter:
             decode_output_s = blend_s = pipe_write_s = mask_eval_s = 0.0
             frames_read = frames_grabbed = output_frames_read = frames_written = 0
             segments = segments_cached = segments_inferred = bands_inferred = windows = 0
+            windows_skipped = 0
+            skip_windows = _skip_windows_enabled()
 
             # Per-mask facts (bounding boxes, float alpha) are derived once per
             # distinct mask array and kept in a small bounded cache.
@@ -735,9 +781,19 @@ class STTNInpainter:
                     segments += 1
                     segment_masks = {}
                     active_modes = set(range(len(mode)))
+                    segment_len = end_f - start_f
+                    emitted = [
+                        index - start_f
+                        for index in range(max(start_f, first), min(end_f, last))
+                    ]
+                    # Local frames whose prediction the compositor will use, per
+                    # band. A static mask needs every emitted frame in every band;
+                    # a per-frame mask needs a frame only in the bands it touches.
+                    wanted = {k: emitted for k in active_modes}
                     if job.frame_mask is not None:
                         started_mask = clock()
                         active_modes = set()
+                        wanted = {}
                         for index in range(max(start_f, first), min(end_f, last)):
                             alpha = np.asarray(job.frame_mask(index))
                             # Only the plan producer guarantees stable storage.
@@ -749,7 +805,11 @@ class STTNInpainter:
                                 facts = _MaskFacts(alpha.copy(), mode)
                             segment_masks[index] = facts
                             active_modes.update(facts.active)
+                            for k in facts.active:
+                                wanted.setdefault(k, []).append(index - start_f)
                         mask_eval_s += clock() - started_mask
+                    if not skip_windows:
+                        wanted = {k: range(segment_len) for k in active_modes}
 
                     prediction_started = time.monotonic()
                     comps = {}
@@ -758,12 +818,24 @@ class STTNInpainter:
                         started_cache = clock()
                         for k in active_modes:
                             keys[k] = cache.key(start_f, end_f, *mode[k])
-                            cached = cache.read(keys[k], end_f - start_f)
+                            cached = cache.read(keys[k], segment_len, need=wanted[k])
                             if cached is not None:
                                 comps[k] = cached
                         cache_read_s += clock() - started_cache
-                        segments_cached += bool(comps)
-                    missing_modes = active_modes - comps.keys()
+                    # Bands to compute, and which of their frames are still
+                    # missing. A cached entry may hold only some frames, and it
+                    # satisfies a band only when it holds every frame needed.
+                    to_predict = {}
+                    for k in active_modes:
+                        entry = comps.get(k)
+                        todo = [j for j in wanted[k] if entry is None or entry[j] is None]
+                        if todo:
+                            # ``None``: every frame (the encoder sees them all anyway).
+                            to_predict[k] = (
+                                todo if skip_windows and len(todo) < segment_len else None
+                            )
+                    missing_modes = set(to_predict)
+                    segments_cached += bool(comps.keys() - missing_modes)
                     frames_hr = [] if output_reader is None else None
                     frames = {k: [] for k in range(len(mode))}
 
@@ -800,13 +872,22 @@ class STTNInpainter:
                         k: executor.submit(
                             _process_segment,
                             frames[k], self.backend, w, h,
-                            self.ref_length, self.neighbor_stride,
+                            self.ref_length, self.neighbor_stride, to_predict[k],
                         )
                         for k in range(len(mode))
                         if frames[k]
                     }
                     for k, future in futures.items():
-                        comps[k] = future.result()
+                        predicted = future.result()
+                        entry = comps.get(k)
+                        if entry is not None:
+                            # Cached frames and new ones are both full-run values,
+                            # so keeping the cached ones and adding the new is exact.
+                            predicted = [
+                                old if old is not None else new
+                                for old, new in zip(entry, predicted)
+                            ]
+                        comps[k] = predicted
                         if cache is not None:
                             started_write = clock()
                             model_s += started_write - started_model
@@ -816,9 +897,11 @@ class STTNInpainter:
                     model_s += clock() - started_model
                     segments_inferred += bool(futures)
                     bands_inferred += len(futures)
-                    windows += sum(
-                        -(-len(frames[k]) // self.neighbor_stride) for k in futures
-                    )
+                    for k in futures:
+                        run, total = _count_windows(
+                            len(frames[k]), self.neighbor_stride, to_predict[k])
+                        windows += run
+                        windows_skipped += total - run
                     prediction_s += time.monotonic() - prediction_started
                     if cache is not None and job.phase_progress is not None:
                         job.phase_progress('predict', min(end_f, last) - first, last - first,
@@ -908,6 +991,7 @@ class STTNInpainter:
                     segments=segments, segments_cached=segments_cached,
                     segments_inferred=segments_inferred,
                     bands_inferred=bands_inferred, windows=windows,
+                    windows_skipped=windows_skipped,
                 )
                 if cache is not None:
                     job.metrics.update(prediction_hits=cache.hits, prediction_misses=cache.misses,
