@@ -582,7 +582,8 @@ def print_counters(stats: dict) -> None:
                ("detect", "detect_calls"), ("fwd", "forward_passes"),
                ("rec.fr", "recovery_frames"), ("rec.call", "recovery_calls"),
                ("rec.det", "recovery_detect_calls"), ("rec.hit", "recovery_hits"),
-               ("present", "frames_present"))
+               ("present", "frames_present"),
+               ("crops", "band_crops_stored"), ("2nd.pass", "band_second_pass"))
     print("\nDetection counters per planning phase")
     print(f"{'phase':<20}{'wall_s':>8}" + "".join(f"{name:>9}" for name, _ in columns))
     for phase, row in stats.items():

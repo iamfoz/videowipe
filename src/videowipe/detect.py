@@ -41,7 +41,7 @@ from typing import Callable, Iterable, Iterator, List, Literal, Protocol, runtim
 import cv2
 import numpy as np
 
-from videowipe import perfstats
+from videowipe import memory, perfstats
 from videowipe.errors import ProcessingCancelledError
 
 logger = logging.getLogger(__name__)
@@ -900,6 +900,22 @@ def _box_overlaps_bbox(
     return bx1 <= x2 and bx2 >= x1 and by1 <= y2 and by2 >= y1
 
 
+def _band_layout(
+    h: int, w: int, mode: str,
+) -> tuple[list[tuple[str, int, int, int, int]], list[str]]:
+    """The bands and image variants the band fallback examines for *mode*."""
+    bands: list[tuple[str, int, int, int, int]] = []
+    bands.append(("bottom", 0, int(h * 0.6), w - 1, h - 1))
+    if mode == "force":
+        bands.append(("top", 0, 0, w - 1, max(0, int(h * 0.25) - 1)))
+
+    if mode == "light":
+        variants = ["original", "contrast"]
+    else:
+        variants = ["original", "contrast", "inverted"]
+    return bands, variants
+
+
 def _band_fallback_detect(
     frames: Iterable[np.ndarray],
     detector: TextDetector,
@@ -922,24 +938,39 @@ def _band_fallback_detect(
         frame_shape = first.shape[:2]
         frame_iter = chain((first,), frame_iter)
     h, w = frame_shape
+    bands, _variants = _band_layout(h, w, mode)
+    return _band_fallback_from_crops(
+        (
+            [frame[by1:by2 + 1, bx1:bx2 + 1] for _name, bx1, by1, bx2, by2 in bands]
+            for frame in frame_iter
+        ),
+        detector, mode, consistency, (h, w),
+    )
 
-    bands: list[tuple[str, int, int, int, int]] = []
-    bands.append(("bottom", 0, int(h * 0.6), w - 1, h - 1))
-    if mode == "force":
-        bands.append(("top", 0, 0, w - 1, max(0, int(h * 0.25) - 1)))
 
-    if mode == "light":
-        variants = ["original", "contrast"]
-    else:
-        variants = ["original", "contrast", "inverted"]
+def _band_fallback_from_crops(
+    crop_sets: Iterable[list[np.ndarray]],
+    detector: TextDetector,
+    mode: str,
+    consistency: float,
+    frame_shape: tuple[int, int],
+) -> list[CleanCandidate]:
+    """:func:`_band_fallback_detect` on pre-cut band crops.
+
+    The fallback reads nothing from a frame except its band crops, so each
+    element of *crop_sets* holds one frame's crops in :func:`_band_layout`
+    order. Running from stored crops after sampling is how the planner avoids
+    decoding the file a second time.
+    """
+    h, w = frame_shape
+    bands, variants = _band_layout(h, w, mode)
 
     freq = np.zeros((h, w), dtype=np.float32)
     n_valid = 0
 
-    for frame in frame_iter:
+    for crops in crop_sets:
         frame_mask = np.zeros((h, w), dtype=np.uint8)
-        for _band_name, bx1, by1, bx2, by2 in bands:
-            crop = frame[by1:by2 + 1, bx1:bx2 + 1]
+        for (_band_name, bx1, by1, bx2, by2), crop in zip(bands, crops):
             if crop.size == 0:
                 continue
             for variant in variants:
@@ -1242,6 +1273,17 @@ def detect_clean_candidates(
     best_preview_score = -1
     logo_frames: list[np.ndarray] = []
     freq = None
+    # The band fallback runs after the main pass (it must see the detector as
+    # that pass left it, e.g. DBNetDetector._manual_only), but it reads only the
+    # band crops of each sampled frame. Keep those crops while sampling, within
+    # a memory budget, instead of decoding the whole file a second time.
+    wants_band_fallback = (
+        subtitle_fallback != "off" and detect_text and detector is not None
+    )
+    band_crops: list[list[np.ndarray]] | None = [] if wants_band_fallback else None
+    band_crop_bytes = 0
+    band_crop_budget = memory.band_crop_budget_bytes() if wants_band_fallback else 0
+    band_bands: list[tuple[str, int, int, int, int]] = []
 
     perfstats.begin("coarse_sampling")
     for sample_index, frame in perfstats.counted(_iter_sample_frames_with_indices(
@@ -1254,6 +1296,22 @@ def detect_clean_candidates(
                 freq = np.zeros((h, w), dtype=np.float32)
         if include_logo and len(logo_frames) < 6:
             logo_frames.append(frame)
+
+        if band_crops is not None:
+            if not band_bands:
+                band_bands = _band_layout(h, w, subtitle_fallback)[0]
+            # Copies, not views: a view would keep the whole frame alive.
+            crops = [
+                frame[by1:by2 + 1, bx1:bx2 + 1].copy()
+                for _name, bx1, by1, bx2, by2 in band_bands
+            ]
+            band_crop_bytes += sum(crop.nbytes for crop in crops)
+            if band_crop_bytes > band_crop_budget:
+                # Too much to hold: drop what was kept and re-read the file
+                # for the fallback, exactly as before.
+                band_crops = None
+            else:
+                band_crops.append(crops)
 
         if not detect_text or detector is None:
             continue
@@ -1378,23 +1436,41 @@ def detect_clean_candidates(
                 )
             )
 
-    if subtitle_fallback != "off" and detect_text and detector is not None:
+    if wants_band_fallback:
         perfstats.begin("band_fallback")
         try:
-            fallback_raw = _band_fallback_detect(
-                (
-                    frame
-                    for _, frame in perfstats.counted(_iter_sample_frames_with_indices(
-                        video_path, sample_count, check_cancelled=check_cancelled,
-                    ))
-                ),
-                detector,
-                mode=subtitle_fallback,
-                consistency=consistency,
-                frame_shape=(h, w),
-            )
+            if band_crops is not None:
+                perfstats.add("band_crops_stored", len(band_crops))
+
+                def stored_crops() -> Iterator[list[np.ndarray]]:
+                    # The re-read pass checked for cancellation before each
+                    # frame; keep that boundary.
+                    for crops in band_crops:
+                        if check_cancelled is not None:
+                            check_cancelled()
+                        yield crops
+
+                fallback_raw = _band_fallback_from_crops(
+                    stored_crops(), detector, subtitle_fallback,
+                    consistency, (h, w),
+                )
+            else:
+                perfstats.add("band_second_pass")
+                fallback_raw = _band_fallback_detect(
+                    (
+                        frame
+                        for _, frame in perfstats.counted(_iter_sample_frames_with_indices(
+                            video_path, sample_count, check_cancelled=check_cancelled,
+                        ))
+                    ),
+                    detector,
+                    mode=subtitle_fallback,
+                    consistency=consistency,
+                    frame_shape=(h, w),
+                )
         finally:
             perfstats.end()
+            band_crops = None
         main_bboxes = [c.bbox for c in candidates]
         surviving = [
             fc for fc in fallback_raw
