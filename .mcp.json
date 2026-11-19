@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "switchyard_code": {
+      "command": "python3",
+      "args": [
+        "-I",
+        "${CLAUDE_PROJECT_DIR:-.}/.switchyard-mcp/switchyard_code_mcp.py"
+      ]
+    },
+    "switchyard_handles": {
+      "command": "python3",
+      "args": [
+        "-I",
+        "${CLAUDE_PROJECT_DIR:-.}/.switchyard-mcp/switchyard_handles_mcp.py"
+      ]
+    }
+  }
+}
