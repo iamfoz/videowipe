@@ -8,7 +8,9 @@ this inpainter, not a public contract.
 from __future__ import annotations
 
 import concurrent.futures
+import functools
 import hashlib
+import math
 from pathlib import Path
 import os
 import subprocess
@@ -68,6 +70,412 @@ def _blend_frame_regions(frame_ori, comp_frames, modes, mask):
         )
     frame[work_from:work_to] = np.clip(work, 0, 255).astype(np.uint8)
     return frame
+
+
+# Compositing only the masked box (P2-6).
+#
+# ``_blend_frame_regions`` above converts and blends whole bands at full frame
+# width. The helpers below produce the same bytes while touching only the
+# bounding box of the non-zero alpha in each band:
+#
+# * With alpha exactly 0.0 the blend is ``0*comp + 1*orig``. ``comp`` is a
+#   float32 holding an integer in 0..255, so ``0*comp`` is +-0.0 and
+#   ``1.0 * orig`` is exact; the sum, the clip and the uint8 cast return
+#   ``orig`` unchanged. Pixels outside a box therefore equal the original
+#   frame exactly, as they do today.
+# * Inside a box the same float32 operations run in the same order, with the
+#   same operands (alpha converted to float32, ``1.0 - alpha`` in float32), so
+#   every value is identical. Bands whose boxes overlap share one float work
+#   buffer and are blended in band order, because a later band reads the
+#   unrounded result of an earlier one.
+
+_REAL_VIDEO_CAPTURE = cv2.VideoCapture
+# ``_blend_frame_regions`` stays the module's seam for observing or replacing
+# composition: when something has substituted it, frames go through it exactly
+# as before instead of through the box path.
+_WHOLE_BAND_BLEND = _blend_frame_regions
+
+
+def _available_memory_bytes():
+    """Memory the machine reports as available, or 0 when it cannot tell."""
+    try:
+        with open("/proc/meminfo", "r", encoding="ascii") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        return int(os.sysconf("SC_PAGE_SIZE")) * int(os.sysconf("SC_PHYS_PAGES")) // 2
+    except (AttributeError, ValueError, OSError):
+        return 0
+
+
+def _blend_cache_budget():
+    """Bytes of per-mask float data worth keeping; scales with free memory.
+
+    ``VIDEOWIPE_BLEND_CACHE_MB`` overrides it (``0`` keeps nothing).
+    """
+    override = os.environ.get("VIDEOWIPE_BLEND_CACHE_MB")
+    if override is not None:
+        try:
+            return max(0, int(float(override) * 1024 * 1024))
+        except ValueError:
+            pass
+    available = _available_memory_bytes()
+    if not available:
+        return 32 * 1024 * 1024
+    return min(available // 64, 512 * 1024 * 1024)
+
+
+def _alpha_box(alpha, top, bottom):
+    """``(y0, y1, x0, x1)`` of the non-zero alpha in rows top:bottom, or None."""
+    band = alpha[top:bottom]
+    if band.size == 0:
+        return None
+    nonzero = band != 0
+    rows = np.flatnonzero(nonzero.any(axis=(1, 2)))
+    if rows.size == 0:
+        return None
+    cols = np.flatnonzero(nonzero.any(axis=(0, 2)))
+    return (top + int(rows[0]), top + int(rows[-1]) + 1,
+            int(cols[0]), int(cols[-1]) + 1)
+
+
+class _MaskFacts:
+    """What the compositor needs to know about one alpha array.
+
+    Everything here is a pure function of the array's contents, so it is
+    computed once and reused for as long as the same array object recurs.
+    The object keeps a reference to the array: while it exists the array
+    cannot be freed and its id cannot be handed to a different array.
+    """
+
+    def __init__(self, mask, modes, owner=None):
+        alpha = np.asarray(mask)
+        if alpha.ndim == 2:
+            alpha = alpha[:, :, None]
+        self.source = mask
+        self.alpha = alpha
+        # Only (H, W, C) alpha has the box fast path; anything else goes
+        # through the unchanged whole-band code.
+        self.simple = alpha.ndim == 3
+        if self.simple:
+            self.boxes = tuple(_alpha_box(alpha, top, bottom) for top, bottom in modes)
+        else:
+            self.boxes = tuple(
+                (top, bottom, 0, 0) if np.any(alpha[top:bottom] != 0) else None
+                for top, bottom in modes
+            )
+        self.active = tuple(k for k, box in enumerate(self.boxes) if box is not None)
+        self._derived = {}
+        self.derived_bytes = 0
+        self._owner = owner
+
+    def float_alpha(self, k):
+        """``(alpha, 1 - alpha)`` as float32 over band k's box (read-only)."""
+        pair = self._derived.get(k)
+        if pair is not None:
+            return pair
+        y0, y1, x0, x1 = self.boxes[k]
+        alpha = self.alpha[y0:y1, x0:x1].astype(np.float32)
+        remainder = 1.0 - alpha
+        alpha.setflags(write=False)
+        remainder.setflags(write=False)
+        pair = (alpha, remainder)
+        owner = self._owner
+        if owner is not None and owner.admit(self, alpha.nbytes + remainder.nbytes):
+            self._derived[k] = pair
+            self.derived_bytes += alpha.nbytes + remainder.nbytes
+        return pair
+
+
+class _MaskCache:
+    """Small bounded LRU of :class:`_MaskFacts` keyed by array identity.
+
+    Entries hold their array, so an id cannot be reused by a different array
+    while it is cached, and lookups still confirm identity. Derived float data
+    is bounded in bytes as well as in entries.
+    """
+
+    def __init__(self, modes, max_entries=8, budget=None):
+        self.modes = tuple(modes)
+        self.max_entries = max(1, int(max_entries))
+        self.budget = _blend_cache_budget() if budget is None else int(budget)
+        self.derived_bytes = 0
+        self._entries = {}
+
+    def __len__(self):
+        return len(self._entries)
+
+    def get(self, mask):
+        entry = self._entries.get(id(mask))
+        if entry is not None and entry.source is mask:
+            self._entries[id(mask)] = self._entries.pop(id(mask))  # most recent
+            return entry
+        entry = _MaskFacts(mask, self.modes, self)
+        self._entries[id(mask)] = entry
+        while len(self._entries) > self.max_entries:
+            self._evict_oldest(keep=entry)
+        return entry
+
+    def admit(self, facts, nbytes):
+        while self.derived_bytes + nbytes > self.budget:
+            if not self._evict_oldest(keep=facts):
+                return False
+        self.derived_bytes += nbytes
+        return True
+
+    def _evict_oldest(self, keep):
+        for key, entry in self._entries.items():
+            if entry is not keep:
+                del self._entries[key]
+                self.derived_bytes -= entry.derived_bytes
+                return True
+        return False
+
+
+def _boxes_overlap(a, b):
+    return a[0] < b[1] and b[0] < a[1] and a[2] < b[3] and b[2] < a[3]
+
+
+def _overlap_groups(items):
+    """Group ``(band, box)`` items whose boxes overlap, each in band order."""
+    groups = []
+    for item in items:
+        group = [item]
+        for other in [g for g in groups if any(_boxes_overlap(item[1], o[1]) for o in g)]:
+            groups.remove(other)
+            group.extend(other)
+        group.sort(key=lambda entry: entry[0])
+        groups.append(group)
+    return groups
+
+
+@functools.lru_cache(maxsize=256)
+def _axis_weights_are_stable(src, dst):
+    """True when INTER_LINEAR's 11-bit weights cannot depend on window position.
+
+    OpenCV derives each weight from ``fx = float((d + 0.5) * src / dst - 0.5)``
+    and rounds ``fx * 2048``. The float32 conversion makes ``fx`` carry a small
+    error that depends on how large ``d`` is, which can only change the rounded
+    weight if ``fx * 2048`` lies within that error of a rounding boundary. For
+    ``src / dst = p / q`` the possible values are ``1024 * r / q`` for integer
+    ``r``; require every one of them to stay clear of the boundary by more than
+    twice the worst-case error.
+    """
+    g = math.gcd(src, dst)
+    q = dst // g
+    error = 2048.0 * 2.0 ** (math.floor(math.log2(max(src, 2))) - 24)
+    tolerance = 2.0 * error + 0.02
+    return all(
+        abs((1024 * r % q) / q - 0.5) > tolerance for r in range(2 * q)
+    )
+
+
+class _BandUpscaler:
+    """Upscale a band's prediction and return only the box that is needed.
+
+    ``cv2.resize`` of the prediction to (frame width x band height) is what
+    the whole-band code does. For INTER_LINEAR, destination pixel ``d`` samples
+    source position ``(d + 0.5) * s - 0.5`` with ``s = src / dst``. A
+    destination window ``[c, d)`` therefore reproduces the same samples from
+    the source window ``[c*s, d*s)`` at the same scale, provided ``c`` and ``d``
+    are multiples of the reduced fraction's denominator (so that ``c*s`` is a
+    whole pixel) and one extra unit of margin on each side supplies the
+    neighbours the border pixels read. That argument is exact only if the
+    fixed-point weights do not depend on position (see
+    ``_axis_weights_are_stable``), and it assumes nothing about this OpenCV
+    build, so each window is also compared on this machine against the full
+    resize over a battery of images before it is used. Any window that is not
+    provably and demonstrably identical falls back to resizing the whole band
+    and cropping, which is exact by construction.
+    """
+
+    PROBES = 6
+
+    def __init__(self, ori_w):
+        self.ori_w = ori_w
+        self._windows = {}
+        self._checked = {}
+
+    @staticmethod
+    def _axis(lo, hi, src, dst):
+        """``(d0, d1, s0, s1, core0, core1)`` for rows or columns ``[lo, hi)``."""
+        full = (0, dst, 0, src, 0, dst)
+        if src <= 0 or dst <= 0 or not _axis_weights_are_stable(src, dst):
+            return full
+        g = math.gcd(src, dst)
+        p, q = src // g, dst // g           # source / destination = p / q
+        core0 = lo // q * q
+        core1 = min(dst, -(-hi // q) * q)
+        c = max(0, core0 - q)
+        d = min(dst, core1 + q)
+        return c, d, c // q * p, d // q * p, core0, core1
+
+    def _window(self, pred_shape, band_h, box):
+        key = (pred_shape, band_h, box)
+        try:
+            return self._windows[key]
+        except KeyError:
+            pass
+        by0, by1, x0, x1 = box
+        ys = self._axis(by0, by1, pred_shape[0], band_h)
+        xs = self._axis(x0, x1, pred_shape[1], self.ori_w)
+        window = None
+        if ys[:2] != (0, band_h) or xs[:2] != (0, self.ori_w):
+            candidate = ys[:4] + xs[:4] + (ys[4], ys[5], xs[4], xs[5])
+            if self._verified(pred_shape, band_h, candidate):
+                window = candidate
+        if len(self._windows) > 256:
+            self._windows.clear()
+        self._windows[key] = window
+        return window
+
+    def _verified(self, pred_shape, band_h, window):
+        """Compare the window with the full resize on several images."""
+        key = (pred_shape, band_h, window)
+        known = self._checked.get(key)
+        if known is not None:
+            return known
+        dy0, dy1, sy0, sy1, dx0, dx1, sx0, sx1, cy0, cy1, cx0, cx1 = window
+        generator = np.random.RandomState(20240607)
+        rows, cols = np.indices(pred_shape[:2])
+        probes = [
+            generator.randint(0, 256, size=pred_shape, dtype=np.uint8)
+            for _ in range(self.PROBES - 2)
+        ]
+        probes.append(np.where((cols % 2)[:, :, None] == 0, 255, 0).astype(np.uint8)
+                      * np.ones(pred_shape, np.uint8))
+        probes.append(np.where(((rows + cols) % 2)[:, :, None] == 0, 255, 0).astype(np.uint8)
+                      * np.ones(pred_shape, np.uint8))
+        ok = True
+        for probe in probes:
+            full = cv2.resize(probe, (self.ori_w, band_h))[cy0:cy1, cx0:cx1]
+            part = cv2.resize(
+                np.ascontiguousarray(probe[sy0:sy1, sx0:sx1]), (dx1 - dx0, dy1 - dy0),
+            )[cy0 - dy0:cy1 - dy0, cx0 - dx0:cx1 - dx0]
+            if not np.array_equal(full, part):
+                ok = False
+                break
+        if len(self._checked) > 256:
+            self._checked.clear()
+        self._checked[key] = ok
+        return ok
+
+    def crop(self, pred, band_h, box):
+        """Resized prediction over ``box`` (band-relative), channels reversed
+        and converted to float32 exactly as ``cvtColor(BGR2RGB)`` +
+        ``astype(float32)`` would."""
+        by0, by1, x0, x1 = box
+        window = None
+        if pred.dtype == np.uint8 and pred.ndim == 3:
+            window = self._window(pred.shape, band_h, box)
+        if window is None:
+            resized = cv2.resize(pred, (self.ori_w, band_h))
+            region = resized[by0:by1, x0:x1]
+        else:
+            dy0, dy1, sy0, sy1, dx0, dx1, sx0, sx1 = window[:8]
+            resized = cv2.resize(
+                np.ascontiguousarray(pred[sy0:sy1, sx0:sx1]),
+                (dx1 - dx0, dy1 - dy0),
+            )
+            region = resized[by0 - dy0:by1 - dy0, x0 - dx0:x1 - dx0]
+        if region.dtype != np.uint8:
+            region = region.astype(np.uint8)
+        return region[:, :, ::-1].astype(np.float32)
+
+
+def _blend_patches(frame_ori, predictions, modes, facts, upscaler):
+    """Blend each band's prediction inside its box; return ``(box, pixels)`` patches.
+
+    ``predictions`` maps a band index to its (unscaled) prediction. Nothing is
+    written to ``frame_ori``; the patches hold final uint8 pixels.
+    """
+    items = [(k, facts.boxes[k]) for k in facts.active if k in predictions]
+    patches = []
+    for group in _overlap_groups(items):
+        uy0 = min(box[0] for _k, box in group)
+        uy1 = max(box[1] for _k, box in group)
+        ux0 = min(box[2] for _k, box in group)
+        ux1 = max(box[3] for _k, box in group)
+        work = frame_ori[uy0:uy1, ux0:ux1].astype(np.float32)
+        views = []
+        for k, box in group:
+            y0, y1, x0, x1 = box
+            top, bottom = modes[k]
+            comp = upscaler.crop(predictions[k], bottom - top, (y0 - top, y1 - top, x0, x1))
+            alpha, remainder = facts.float_alpha(k)
+            region = work[y0 - uy0:y1 - uy0, x0 - ux0:x1 - ux0]
+            region[...] = alpha * comp + remainder * region
+            views.append((box, region))
+        for box, region in views:
+            patches.append((box, np.clip(region, 0, 255).astype(np.uint8)))
+    return patches
+
+
+def _compose_legacy(frame_ori, predictions, modes, mask, ori_w, dual):
+    """The whole-band composition, for inputs the box path does not cover."""
+    frame_comps = []
+    for k in range(len(modes)):
+        if k in predictions:
+            mode_height = modes[k][1] - modes[k][0]
+            comp = cv2.resize(predictions[k], (ori_w, mode_height))
+            comp = cv2.cvtColor(
+                np.array(comp).astype(np.uint8), cv2.COLOR_BGR2RGB
+            ).astype(np.float32)
+            frame_comps.append(comp)
+        else:
+            frame_comps.append(None)
+    frame = _blend_frame_regions(frame_ori, frame_comps, modes, mask)
+    if dual:
+        frame = np.vstack([frame_ori, frame])
+    return frame
+
+
+def _compose_frame(frame_ori, predictions, modes, facts, upscaler, ori_w, *,
+                   dual, own_frame, legacy_mask):
+    """Return the frame to write, byte-identical to the whole-band composition.
+
+    ``own_frame`` says ``frame_ori`` may be edited in place (non-dual only):
+    nothing else refers to it. Otherwise it is copied before it is changed,
+    and an unchanged frame is returned as is.
+    """
+    if not (
+        _blend_frame_regions is _WHOLE_BAND_BLEND
+        and facts.simple
+        and np.ndim(legacy_mask) == 3
+        and frame_ori.dtype == np.uint8
+        and frame_ori.ndim == 3
+        and frame_ori.shape[2] == 3
+        and frame_ori.shape[1] == ori_w
+        and frame_ori.shape[:2] == facts.alpha.shape[:2]
+        and all(p.ndim == 3 and p.shape[2] == 3 for p in predictions.values())
+    ):
+        return _compose_legacy(frame_ori, predictions, modes, legacy_mask, ori_w, dual)
+    patches = _blend_patches(frame_ori, predictions, modes, facts, upscaler)
+    if dual:
+        height = frame_ori.shape[0]
+        frame = np.empty((2 * height,) + frame_ori.shape[1:], dtype=np.uint8)
+        frame[:height] = frame_ori
+        frame[height:] = frame_ori
+        target = frame[height:]
+    elif not patches:
+        return frame_ori
+    else:
+        frame = frame_ori if own_frame and frame_ori.flags.writeable else frame_ori.copy()
+        target = frame
+    for (y0, y1, x0, x1), pixels in patches:
+        target[y0:y1, x0:x1] = pixels
+    return frame
+
+
+def _write_frame(stream, frame):
+    """Write a frame's bytes without an intermediate ``tobytes()`` copy."""
+    if frame.flags.c_contiguous and frame.size:
+        stream.write(memoryview(frame).cast("B"))
+    else:
+        stream.write(frame.tobytes())
 
 
 def _process_segment(frames, backend, w, h, ref_length, neighbor_stride):
@@ -294,6 +702,20 @@ class STTNInpainter:
             frames_read = frames_grabbed = output_frames_read = frames_written = 0
             segments = segments_cached = segments_inferred = bands_inferred = windows = 0
 
+            # Per-mask facts (bounding boxes, float alpha) are derived once per
+            # distinct mask array and kept in a small bounded cache.
+            mask_cache = _MaskCache(mode)
+            upscaler = _BandUpscaler(ori_w)
+            static_facts = None
+            # A frame this loop decoded itself can be edited in place: every
+            # read() of a real capture returns a new array and nothing else
+            # keeps the frame. Anything else is copied before it is changed.
+            own_frames = (
+                output_reader is not None
+                and type(output_reader) is _REAL_VIDEO_CAPTURE
+                and not job.dual
+            )
+
             # Backend instances are shared runtime objects; keep inference
             # serialized until the backend declares a thread-safety contract.
             t_inpaint_start = time.monotonic()
@@ -317,14 +739,12 @@ class STTNInpainter:
                             # Only the plan producer guarantees stable storage.
                             # Even readonly views from custom callbacks can alias
                             # a buffer that the next callback invocation changes.
-                            if not getattr(job.frame_mask, "_videowipe_stable_masks", False):
-                                alpha = alpha.copy()
-                            if alpha.ndim == 2:
-                                alpha = alpha[:, :, None]
-                            segment_masks[index] = alpha
-                            for k, (top, bottom) in enumerate(mode):
-                                if k not in active_modes and np.any(alpha[top:bottom] != 0):
-                                    active_modes.add(k)
+                            if getattr(job.frame_mask, "_videowipe_stable_masks", False):
+                                facts = mask_cache.get(alpha)
+                            else:
+                                facts = _MaskFacts(alpha.copy(), mode)
+                            segment_masks[index] = facts
+                            active_modes.update(facts.active)
                         mask_eval_s += clock() - started_mask
 
                     prediction_started = time.monotonic()
@@ -421,31 +841,25 @@ class STTNInpainter:
                         # Per-frame temporal mask (global index start_f + j) when a
                         # WipePlan supplies one; else the static whole-video mask.
                         if job.frame_mask is not None:
-                            per_frame = segment_masks[start_f + j]
-                        frame_comps = []
+                            facts = segment_masks[start_f + j]
+                        else:
+                            if static_facts is None:
+                                static_facts = mask_cache.get(job.mask)
+                            facts = static_facts
+                        predictions = {}
                         for k in range(len(mode)):
                             if comps.get(k) and j < len(comps[k]) and comps[k][j] is not None:
-                                mode_height = mode[k][1] - mode[k][0]
-                                comp = cv2.resize(
-                                    comps[k][j], (ori_w, mode_height),
-                                )
-                                comp = cv2.cvtColor(
-                                    np.array(comp).astype(np.uint8), cv2.COLOR_BGR2RGB
-                                ).astype(np.float32)
-                                frame_comps.append(comp)
-                            else:
-                                frame_comps.append(None)
+                                predictions[k] = comps[k][j]
                         # Soft alpha blend: mask is float32 in [0,1] when
                         # feather_radius > 0, else uint8 in {0,1}.
-                        blend_mask = per_frame if job.frame_mask is not None else job.mask
-                        frame = _blend_frame_regions(
-                            frame_ori, frame_comps, mode, blend_mask,
+                        frame = _compose_frame(
+                            frame_ori, predictions, mode, facts, upscaler, ori_w,
+                            dual=job.dual, own_frame=own_frames,
+                            legacy_mask=facts.alpha if job.frame_mask is not None else job.mask,
                         )
-                        if job.dual:
-                            frame = np.vstack([frame_ori, frame])
                         started_write = clock()
                         blend_s += started_write - started_blend
-                        pipe.stdin.write(frame.tobytes())
+                        _write_frame(pipe.stdin, frame)
                         pipe_write_s += clock() - started_write
                         frames_written += 1
 
