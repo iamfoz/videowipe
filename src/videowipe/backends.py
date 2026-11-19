@@ -137,6 +137,15 @@ class TorchBackend(InpaintBackend):
             self.model = None
         if self.device is not None and self.device.type == "cuda":
             torch.cuda.empty_cache()
+        elif self.device is not None and self.device.type == "mps":
+            # Apple Silicon memory is shared with the system: return the Metal
+            # allocator's cached blocks once the model's tensors are collected.
+            import gc
+
+            gc.collect()
+            empty_cache = getattr(getattr(torch, "mps", None), "empty_cache", None)
+            if empty_cache is not None:
+                empty_cache()
 
 
 class ONNXBackend(InpaintBackend):
