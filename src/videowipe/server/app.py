@@ -1076,12 +1076,92 @@ def result_video(job_id: str):
     return FileResponse(_result_file(job), media_type="video/mp4")
 
 
+_EVIDENCE_SETS: dict[str, tuple[tuple, frozenset]] = {}
+_EVIDENCE_SETS_LIMIT = 16
+_EVIDENCE_SETS_LOCK = threading.Lock()
+
+
+def _evidence_signature(job: Job) -> tuple | None:
+    """Identify the plan and candidates files an evidence set was derived from."""
+    try:
+        files = (_plan_path(job), _plan_directory(job) / "clean_candidates.json")
+        return tuple((str(path), path.stat().st_size, path.stat().st_mtime_ns) for path in files)
+    except (HTTPException, OSError):
+        return None
+
+
+def _remember_evidence(job: Job, signature: tuple | None, frames: set[int]) -> None:
+    if signature is None:
+        return
+    with _EVIDENCE_SETS_LOCK:
+        _EVIDENCE_SETS.pop(job.id, None)
+        _EVIDENCE_SETS[job.id] = (signature, frozenset(frames))
+        while len(_EVIDENCE_SETS) > _EVIDENCE_SETS_LIMIT:
+            _EVIDENCE_SETS.pop(next(iter(_EVIDENCE_SETS)))
+
+
+def _is_known_evidence(job: Job, frame_index: int) -> bool:
+    """True only if this frame was already established as evidence for the current files."""
+    with _EVIDENCE_SETS_LOCK:
+        known = _EVIDENCE_SETS.get(job.id)
+    return known is not None and frame_index in known[1] and known[0] == _evidence_signature(job)
+
+
+def _write_evidence(cache: Path, encoded) -> None:
+    temporary = cache.with_suffix(f".{uuid.uuid4().hex}.tmp")
+    temporary.write_bytes(encoded.tobytes())
+    temporary.replace(cache)
+
+
+def _decode_evidence(job: Job, source: Path, frame_index: int, targets: list[int]) -> Response:
+    """Decode every target in one ascending sequential pass and cache each JPEG."""
+    wanted = set(targets)
+    served = False
+    reader = cv2.VideoCapture(str(source))
+    try:
+        # Sequential grab/retrieve from frame 0 only: seeks are not trusted for frame identity.
+        for index in range(targets[-1] + 1):
+            if not reader.grab():
+                break
+            if index not in wanted:
+                continue
+            cache = Path(job.output_dir) / f"evidence-{index}.jpg"
+            ok, frame = reader.retrieve()
+            if index != frame_index:
+                # Extra targets are best effort: a failure only leaves them uncached.
+                if ok and not cache.is_symlink():
+                    encoded_ok, encoded = cv2.imencode(".jpg", frame)
+                    if encoded_ok:
+                        _write_evidence(cache, encoded)
+                continue
+            if not ok:
+                raise HTTPException(status_code=422, detail="cannot decode requested frame")
+            encoded_ok, encoded = cv2.imencode(".jpg", frame)
+            if not encoded_ok:
+                raise HTTPException(status_code=422, detail="cannot encode requested frame")
+            if cache.is_symlink():
+                raise HTTPException(status_code=409, detail="unsafe evidence cache")
+            _write_evidence(cache, encoded)
+            served = True
+    finally:
+        reader.release()
+    if not served:
+        raise HTTPException(status_code=422, detail="cannot decode requested frame")
+    return FileResponse(Path(job.output_dir) / f"evidence-{frame_index}.jpg", media_type="image/jpeg")
+
+
 @app.get("/jobs/{job_id}/frame")
 def source_frame(job_id: str, frame_index: int = Query(ge=0)):
     job = get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
     source = _job_file(job, job.video_path)
+    cache = Path(job.output_dir) / f"evidence-{frame_index}.jpg"
+    # A cached file only exists for a frame already established as evidence, so
+    # serve it without parsing the plan and candidates again.
+    if cache.exists() and _is_known_evidence(job, frame_index):
+        return FileResponse(_job_file(job, cache), media_type="image/jpeg")
+    signature = _evidence_signature(job)
     plan = load_wipe_plan(str(_plan_path(job)), load_masks=False)
     if frame_index >= plan.source.frame_count:
         raise HTTPException(status_code=400, detail="frame is outside the video")
@@ -1092,10 +1172,15 @@ def source_frame(job_id: str, frame_index: int = Query(ge=0)):
                    if type(n) is int and 0 <= n < plan.source.frame_count]
         if present:
             evidence_frames.add(min(present))
+    _remember_evidence(job, signature, evidence_frames)
     with job.media_lock:
-        cache = Path(job.output_dir) / f"evidence-{frame_index}.jpg"
-        if frame_index in evidence_frames and cache.exists():
-            return FileResponse(_job_file(job, cache), media_type="image/jpeg")
+        if frame_index in evidence_frames:
+            if cache.exists():
+                return FileResponse(_job_file(job, cache), media_type="image/jpeg")
+            # One ascending pass serves this frame and every other uncached evidence frame.
+            targets = sorted(n for n in evidence_frames if n == frame_index
+                             or not (Path(job.output_dir) / f"evidence-{n}.jpg").exists())
+            return _decode_evidence(job, source, frame_index, targets)
         reader = cv2.VideoCapture(str(source))
         try:
             # ponytail: decode from zero for exact frame identity; index keyframes if long-video evidence becomes slow.
@@ -1110,11 +1195,4 @@ def source_frame(job_id: str, frame_index: int = Query(ge=0)):
         ok, encoded = cv2.imencode(".jpg", frame)
         if not ok:
             raise HTTPException(status_code=422, detail="cannot encode requested frame")
-        if frame_index in evidence_frames:
-            if cache.is_symlink():
-                raise HTTPException(status_code=409, detail="unsafe evidence cache")
-            temporary = cache.with_suffix(f".{uuid.uuid4().hex}.tmp")
-            temporary.write_bytes(encoded.tobytes())
-            temporary.replace(cache)
-            return FileResponse(cache, media_type="image/jpeg")
         return Response(encoded.tobytes(), media_type="image/jpeg")
