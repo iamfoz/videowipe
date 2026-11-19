@@ -263,9 +263,13 @@ def test_refine_counters_on_a_scripted_scenario(tmp_path):
     assert (row["frames_converted"], row["frames_grabbed"]) == (6, 2)
     # Frames 2, 4, 6 find a box (no recovery); 3, 5, 7 are empty and recover.
     assert row["recovery_calls"] == 3 and row["recovery_frames"] == 3
-    assert row["recovery_detect_calls"] == 3 * 6  # six contrast variants each
+    # Six contrast variants on frame 3, where every variant sees a box; on the
+    # empty frames 5 and 7 the sixth is skipped (five empty variants cannot be
+    # confirmed by a lone sixth).
+    assert row["recovery_detect_calls"] == 6 + 5 + 5
+    assert row["recovery_variants_skipped"] == 2
     assert row["recovery_hits"] == 1              # only frame 3 agrees
-    assert row["detect_calls"] == 6 + 18
+    assert row["detect_calls"] == 6 + 16
     # Present: 2, 4, 6 by detection plus 3 by recovery.
     assert row["frames_present"] == 4
     assert row["forward_passes"] == 0             # the stub is not a DBNet
@@ -310,8 +314,9 @@ def test_empty_frame_costs_two_forward_passes_and_a_hit_costs_one():
     assert row["detect_calls"] == 0  # forwards are counted inside the detector
 
 
-def test_worst_case_empty_frame_is_fourteen_forward_passes(tmp_path):
-    """2 for the frame itself plus 6 recovery variants x 2 (the PRD's P2-3 case)."""
+def test_empty_frame_is_twelve_forward_passes_since_the_last_variant_is_skipped(tmp_path):
+    """2 for the frame itself plus 5 recovery variants x 2 (the PRD's P2-3 case was
+    14 with all six; the sixth cannot confirm anything once five found nothing)."""
     video = _write_indexed_video(tmp_path / "indexed.avi")
     candidate = SimpleNamespace(
         id="A", bbox=(10, 28, 54, 44), detector_backed=True,
@@ -326,10 +331,11 @@ def test_worst_case_empty_frame_is_fourteen_forward_passes(tmp_path):
         refine_temporal_presence(video, result, {"A": [Segment(4, 5)]}, N)
     row = perfstats.finish(handle)["refine"]
     assert row["frames_converted"] == 1 and row["frames_grabbed"] == 4
-    assert row["detect_calls"] == 1 + 6
+    assert row["detect_calls"] == 1 + 5
     assert row["recovery_calls"] == 1 and row["recovery_hits"] == 0
-    assert row["forward_passes"] == 14
-    assert (row["forward_hl"], row["forward_manual"]) == (7, 7)
+    assert row["recovery_variants_skipped"] == 1
+    assert row["forward_passes"] == 12
+    assert (row["forward_hl"], row["forward_manual"]) == (6, 6)
     assert row["frames_present"] == 0
 
 
@@ -365,10 +371,11 @@ def test_boundary_probe_counters_on_a_scripted_gap(tmp_path):
     probe = stats["boundary_probe"]
     assert probe["frames_converted"] == 3 and probe["frames_grabbed"] == 3 + 3
     # One detect per probed frame; the two empty gap frames each get a recovery
-    # attempt of six variants that finds nothing.
-    assert probe["detect_calls"] == 3 + 2 * 6
+    # attempt that finds nothing (five variants run, the sixth is skipped).
+    assert probe["detect_calls"] == 3 + 2 * 5
     assert probe["recovery_calls"] == 2 and probe["recovery_frames"] == 2
-    assert probe["recovery_detect_calls"] == 12 and probe["recovery_hits"] == 0
+    assert probe["recovery_detect_calls"] == 10 and probe["recovery_hits"] == 0
+    assert probe["recovery_variants_skipped"] == 2
     assert probe["frames_present"] == 1  # only frame 8 has a box
     assert "descender_recovery" in stats
 

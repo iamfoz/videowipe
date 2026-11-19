@@ -1614,6 +1614,27 @@ def _needs_contrast_recovery(
                          < (x2 - x1) / 2)
 
 
+def _later_variants_can_confirm(
+    done: list[tuple[str, list]], remaining: list[str],
+) -> bool:
+    """Whether running the *remaining* variants could still confirm a box.
+
+    A box is confirmed only when entries from two variants of *different*
+    families agree, so a remaining variant can add to the result only if some
+    earlier variant of another family could hold an entry for it to agree
+    with. That earlier variant is either one already run that found entries
+    (*done*, in order) or one of the remaining ones, whose entries are not yet
+    known. When no such pair exists the result is already fixed.
+    """
+    found = {family for family, entries in done if entries}
+    for position, family in enumerate(remaining):
+        if any(other != family for other in found):
+            return True
+        if any(other != family for other in remaining[:position]):
+            return True
+    return False
+
+
 def _contrast_recovered_boxes(
     detector: TextDetector,
     frame: np.ndarray,
@@ -1661,7 +1682,20 @@ def _contrast_recovered_boxes(
     try:
         per_variant: list[tuple[str, list[tuple[TextBox, tuple[int, int, int, int]]]]] = []
         confirmed: dict[tuple[int, int, int, int], TextBox] = {}
-        for family, variant_crop in _contrast_restored_variants(crop):
+        variants = list(_contrast_restored_variants(crop))
+        families = [family for family, _ in variants]
+        for position, (family, variant_crop) in enumerate(variants):
+            # Stop only when the remaining variants cannot change the returned
+            # boxes: no remaining one can pair with an earlier or a later
+            # variant of another family that may hold entries. Only trailing
+            # variants are ever dropped, so no later call sees a different
+            # detector state, and the ``finally`` below restores the flag as
+            # it always did. (A skipped call is not made, so a detector error
+            # it would have raised is not seen; none of the six variants
+            # differs from the others in shape or type.)
+            if not _later_variants_can_confirm(per_variant, families[position:]):
+                perfstats.add("recovery_variants_skipped", len(variants) - position)
+                break
             entries = band_boxes(variant_crop)
             for earlier_family, earlier in per_variant:
                 if family == earlier_family:
