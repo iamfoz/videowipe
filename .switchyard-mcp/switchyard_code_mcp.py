@@ -3138,6 +3138,8 @@ def tool_outline(args: dict) -> str:
         doc = f"  -- {s['doc']}" if s["doc"] else ""
         plain.append(f"{span(s):>11} {'  ' * s['depth']}{s['kind']}: {s['sig']}{doc}")
         compact.append(f"{' ' * s['depth']}{span(s)} {s['kind']}: {s['sig']}{doc}")
+    if rel in idx.files:
+        stands_in_for(idx, [rel])
     return answer(pick(fmt, plain, compact, OUTLINE_MAX_CHARS), idx, [rel] if rel in idx.files else [])
 
 
@@ -3237,6 +3239,7 @@ def tool_symbol(args: dict) -> str:
     out += numbered(lines, s["start"])
     if capped:
         out.append(f"... [{s['end'] - end:,} more lines; continue with code_read path={rel} start={end + 1}]")
+    stands_in_for(idx, [rel])
     return answer(finish(out), idx, [rel])
 
 
@@ -3944,6 +3947,7 @@ def tool_context(args: dict) -> str:
         dropped = picked.pop()
         left.insert(0, {"rel": dropped["rel"], "sym": dropped["sym"]})
         result = answer(text_of(picked, left), idx, sorted({p["rel"] for p in picked}))
+    stands_in_for(idx, sorted({p["rel"] for p in picked}))
     return result[:budget_chars]
 
 
@@ -4844,8 +4848,79 @@ INSTRUCTIONS = (
 # (switchyard_gateway_client.Reporter). None for the command line and when imported.
 REPORTER = None
 
+# --- what a call saved (for the activity report) ----------------------------------------------
+#
+# An estimate of the context a call kept out of the conversation, against the usual alternative of
+# reading the whole file: code_outline, a code_symbol body and code_context stand in for the files
+# they show. Searches, listings, code_read and the rest stand in for a grep or a ranged read, which
+# cost about the same, so they claim nothing.
+
+SAVING_FILE_CAP = 25000        # tokens: about what one whole-file read returns at most
+_STANDS_IN = None              # (idx, [rel, ...]) declared by the tool that is answering, per call
+
+
+def stands_in_for(idx, rels) -> None:
+    """The answer being built replaces reading these files whole (saving_ledger counts it)."""
+    global _STANDS_IN
+    _STANDS_IN = (idx, list(rels))
+
+
+class SavingLedger:
+    """Tokens saved per call, without counting a file twice. A file is credited the first time an
+    answer stands in for it: its size (characters / 4, at most SAVING_FILE_CAP) less the answer.
+    A later answer about the same file saves nothing more and costs its own size, which is taken
+    off that file's credit and off the next saving reported, so the running total stays
+    (files stood in for) - (answers about them), never below zero."""
+
+    def __init__(self):
+        self.credit = {}     # (root, rel) -> tokens of saving still standing for that file
+        self.debt = 0        # reported too much so far by this many tokens
+
+    def saved(self, files, answer_tokens: int) -> int:
+        """files: [((root, rel), file tokens)] the answer stands in for."""
+        files = list(dict(files).items())
+        new = [(key, size) for key, size in files if key not in self.credit]
+        old = [key for key, _ in files if key in self.credit]
+        raw = sum(min(size, SAVING_FILE_CAP) for _, size in new) - max(0, int(answer_tokens))
+        if raw >= 0:
+            total = sum(min(size, SAVING_FILE_CAP) for _, size in new) or 1
+            for key, size in new:
+                self.credit[key] = raw * min(size, SAVING_FILE_CAP) // total
+        else:
+            excess, raw = -raw, 0
+            for key, _ in new:
+                self.credit[key] = 0
+            for key in old:
+                take = min(excess, self.credit[key])
+                self.credit[key] -= take
+                self.debt += take
+                excess -= take
+        saved = max(0, raw - self.debt)
+        self.debt -= raw - saved
+        return saved
+
+
+SAVING_LEDGER = SavingLedger()
+
+
+def saved_tokens_of(answer_tokens: int, is_error: bool) -> int:
+    """The estimate for the call just answered (0 for a tool that declared nothing, or an error)."""
+    declared = _STANDS_IN
+    if declared is None or is_error:
+        return 0
+    idx, rels = declared
+    files = []
+    for rel in rels:
+        entry = idx.files.get(rel)
+        if not entry or entry.get("language") in VIEW_LANGUAGES:
+            continue   # a document's size on disk is not the size of its text
+        files.append(((idx.root, rel), int(entry.get("size") or 0) // 4))
+    return SAVING_LEDGER.saved(files, answer_tokens) if files else 0
+
 
 def call_tool(name: str, args: dict) -> dict:
+    global _STANDS_IN
+    _STANDS_IN = None
     try:
         text, is_error = HANDLERS[name](args if isinstance(args, dict) else {}), False
     except ToolError as e:
@@ -4886,9 +4961,11 @@ def handle(request: dict):
         started = time.monotonic()
         result = call_tool(name, params.get("arguments") or {})
         if REPORTER is not None:
-            # no per-call estimate of what reading whole files would have cost: no saved_tokens
             size = gateway_client.tokens_of(sum(len(c.get("text") or "") for c in result["content"]))
-            REPORTER.call(name, (time.monotonic() - started) * 1000, size, size, is_error=result["isError"])
+            saved = saved_tokens_of(size, result["isError"])
+            # result_tokens: what reading the files whole would have put in the conversation
+            REPORTER.call(name, (time.monotonic() - started) * 1000, size + saved, size,
+                          is_error=result["isError"], saved_tokens=saved if saved else None)
     else:
         return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": f"no method {method}"}}
     return {"jsonrpc": "2.0", "id": rid, "result": result}

@@ -1,13 +1,13 @@
 Switchyard MCP servers, copied into this project so sessions that cannot reach your own machine
 (a cloud session, another clone) can start them. They are started by .mcp.json in the project root.
 
-Version: 1.23.0
+Version: 1.24.0
 Update or remove: run `./switchyard.sh clients vendor --into <this project>` (add --remove to
 take them out) from a Switchyard checkout. Do not edit these files here: an update replaces them.
 
 Without SWITCHYARD_URL in the session's environment the tools work locally and report nothing.
 
-37e345280c8ff39da8e5b396075718dc59ded5dfce7b9cb711748de18b6308ea  switchyard_code_mcp.py
+2ea9bfa3f9ea769ca6d1a8d44399b9e0448c49bac62073b6804f5cd81689a14a  switchyard_code_mcp.py
 9f47313d0e219bea25d996fddb44e650857c8773934d97ee3a648b12d82334d0  switchyard_gateway_client.py
 36ea632c234b8994b33390539da0b9137b86248dd5709eacaccf447f8dd9c654  switchyard_handles.py
 b829a2b7f98589f848c8c4e46094da60e2e48a1f8604f3e53c828ae996f0e453  switchyard_handles_mcp.py
