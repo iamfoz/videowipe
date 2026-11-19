@@ -45,7 +45,8 @@ branches for day-to-day use; it is not on GitHub.
 Apple M2 Pro, 12 cores, 32 GB, torch 2.15 on MPS. Clip `chinese1.mp4` (1080p,
 591 frames, two active bands), medians of three runs:
 
-- Whole run 135.5 s → 127.5 s after Phases 1 and 2 (−5.9%).
+- Whole run 135.5 s → 127.5 s after Phases 1 and 2 (−5.9%); 120.1 s with
+  skip windows as well.
 - Blend 6.30 s → 0.74 s. Planning 44.2 s → 41.5 s. Model inference unchanged
   at ~80 s (136 ms a frame) and now 63% of the run.
 - Half precision on MPS: 1.4% faster and failed the output gate. **Not
@@ -67,19 +68,19 @@ the PRD's Phase 2 status.
    crop inputs) was measured and not built: 10–15× faster per call but it
    changes plans and loses real recoveries.
 
-**Not yet measured on the reference Mac:** the time saved by either change,
-and byte identity of a clean on MPS with `VIDEOWIPE_SKIP_WINDOWS` on and off
-(proved here with ONNX on CPU only). Commands:
+Skip windows is measured on the reference Mac: `chinese1` model inference
+79.98 s → 70.96 s (−11.3%), whole run 129.66 s → 120.09 s; nothing
+measurable on the other two; output byte-identical on MPS with the switch on
+and off. **Recovery reuse is not yet timed on the Mac** (expected about 3 s of
+planning on `chinese1`):
 
 ```
-python scripts/skip_windows_estimate.py CLIPS -o OUT
-python scripts/perf_baseline.py CLIPS -o OUT/on --runs 3
-VIDEOWIPE_SKIP_WINDOWS=off python scripts/perf_baseline.py CLIPS -o OUT/off --runs 3
-cmp OUT/on/NAME/run-001/clean/NAME_clean.mp4 OUT/off/NAME/run-001/clean/NAME_clean.mp4
+python scripts/perf_baseline.py CLIP -o OUT/on --runs 3 --no-full
+VIDEOWIPE_RECOVERY_REUSE=off python scripts/perf_baseline.py CLIP -o OUT/off --runs 3 --no-full
 ```
 
-and the same on/off pair with `VIDEOWIPE_RECOVERY_REUSE` and `--no-full` for
-planning.
+on `perf/recovery-reuse`. Watch for disturbed runs: three of nine runs in the
+skip-windows measurement were about 2.1× slower with identical work.
 
 Not started: Phase 3 of the PRD (output fidelity: variable-frame-rate timing,
 audio copy, metadata and chapters, colour tags, 10-bit/HDR, the OCR

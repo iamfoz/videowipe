@@ -779,10 +779,23 @@ do not fill their edge segments, and on re-runs over a partly filled cache;
 on dense dialogue it is negligible. Proven against the original
 `_process_segment` embedded as an oracle and by an end-to-end clean (4 of 30
 windows skipped on the 6-second clip, output byte-identical to upstream's).
-Verified with ONNX on CPU only; time saved on MPS, and byte identity there
-with the switch on and off, are **not yet measured on the reference Mac**.
-Each plan here has one inpainting band, although §4 describes `chinese1` as
-having two active bands; unresolved.
+
+Measured on the reference Mac (M2 Pro, torch 2.15 on MPS, float32, median of
+3 runs, `VIDEOWIPE_SKIP_WINDOWS` on against `off` on the same branch):
+
+| Clip | Windows | Model inference off → on | Whole run off → on |
+|---|---|---|---|
+| `chinese1.mp4` | 119 → 106 | 79.98 s → 70.96 s (−11.3%) | 129.66 s → 120.09 s (−7.4%) |
+| `english1.mp4` | 100 → 99 | 69.79 s → 66.81 s (−4.3%, mostly noise: 1 window) | 121.89 s → 117.00 s |
+| `others.mp4` | 104 → 104 | 71.13 s → 69.43 s (one clean run; no change expected) | — |
+
+Model time follows the window count on `chinese1`. The output videos are
+byte-identical with the switch on and off on all three clips on MPS. Three of
+the nine "on" runs (`english1` run 3, `others` runs 1 and 2) ran about 2.1×
+slower in model inference with identical work, so something else loaded the
+machine then; the `others` median is unusable and its one undisturbed run is
+quoted. The Mac's plans also have one inpainting band per clip, so the "two
+active bands" in §4 describes candidates, not model bands.
 
 **Recovery reuse result** (`scripts/recovery_reuse_probe.py`, counts exact):
 
