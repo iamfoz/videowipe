@@ -717,11 +717,48 @@ and output video are byte-identical to upstream's.
 
 | Item | Branch | Outcome |
 |---|---|---|
-| P2-1 half precision on MPS | `perf/mps` | Implemented behind `VIDEOWIPE_PRECISION` (`auto`, `float32`, `float16`). `auto` is unchanged. MPS use is guarded by an on-device numeric self-test with a float32 fallback. **Not yet measured on the reference Mac**: see `docs/precision.md` and `scripts/compare_clean_outputs.py`. `auto` switches to half precision on MPS only if the median of three runs is at least 15% faster and the comparison passes on the three samples. |
+| P2-1 half precision on MPS | `perf/mps` | Implemented behind `VIDEOWIPE_PRECISION` (`auto`, `float32`, `float16`), guarded by an on-device numeric self-test with a float32 fallback. **Measured on the reference Mac and not adopted: `auto` stays float32 on MPS.** See the result below. The setting remains for chips where half precision is faster (C6). |
 | P2-4 band fallback without a second decode | `perf/detector-calls` (on `perf/instrumentation`) | Done, exact. The fallback runs from band crops kept while sampling, within a memory budget (`VIDEOWIPE_BAND_CROP_BUDGET_MB`), otherwise the old second pass. Probe and descender passes were not merged: the descender frame set depends on the probe results. |
 | P2-3(a) recovery pruning | `perf/detector-calls` | Done, exact for returned boxes. Only the sixth variant is provably redundant: 33 of 954 detector calls on the reference clip (3%). A detector error that only that call would raise is no longer seen. |
 | P2-3(b) recovery pre-gate | — | **Not built.** A brightness gate separated hits from misses on the three real samples but would have discarded 12 genuine recoveries on synthetic fades to black and mid-grey dissolves — the cases recovery exists for. No statistic separated all 275 recorded recoveries with a margin. |
 | P2-6 blend inside the mask's box | `perf/blend-box` (on `perf/instrumentation`) | Done, byte-identical pipe output. Blend time in a real clean fell from 2.2 s to 0.2–0.3 s on the Linux test machine (the reference Mac spent 6.3 s). Cropped upscaling is used only where a rounding argument and an on-machine check both agree; `VIDEOWIPE_BLEND_WINDOW_RESIZE=off` disables it. |
+
+**P2-1 result on the reference Mac** (M2 Pro, torch 2.15, `chinese1.mp4`,
+median of 3 runs each; the float16 run used MPS autocast and passed the
+on-device self-test):
+
+| | float32 | float16 | Change |
+|---|---|---|---|
+| Model inference | 80.38 s (136.0 ms/frame) | 79.26 s (134.1 ms/frame) | −1.4% |
+| Whole run | 127.49 s | 125.32 s | −1.7% |
+
+That is within run-to-run variation and far below the 15% bar. The output
+comparison also failed the gate: mean absolute difference inside the mask
+0.63 (limit 0.5) and temporal-difference error 0.52 (limit 0.5), with the
+caveat that both figures include H.264 encoder noise (0.16 over the whole
+frame). No speed for a measurable change in output: closed as tried, not
+adopted on this chip. As predicted in §7, M1–M4 class GPUs gain little from
+half precision; the setting stays available for later chips.
+
+**Phase 1 + 2 result on the reference Mac** (same clip, float32, median of 3,
+against the §4 baseline):
+
+| Stage | Baseline | Now | Change |
+|---|---|---|---|
+| Whole run | 135.54 s | 127.49 s | −5.9% |
+| Planning | 44.22 s | 41.46 s | −6.2% |
+| · refine | 26.48 s | 24.86 s | |
+| · boundary probes | 9.48 s | 8.74 s | |
+| · band fallback | 4.59 s | 4.35 s | (the removed decode pass is small on a 591-frame clip) |
+| Blend | 6.30 s | 0.74 s | −88% |
+| Composition | 8.54 s | 3.79 s | −56% |
+| Model inference | 81.05 s | 80.38 s | unchanged |
+
+Model inference is now 63% of the run and unchanged at 136 ms a frame. The
+remaining levers on it are P2-2 (skip windows that cannot matter; exact,
+workload-dependent) and fewer overlapping windows (faster, but changes
+output; opt-in only). The long-file planning re-run (expected to drop the
+58 s band-fallback pass) is still to be recorded.
 
 Recovery remains about a third of detector calls in refine and probes on the
 reference clip. Candidates that do not need a gate: cheaper crop inputs
