@@ -16,7 +16,7 @@ servers updated to 1.24.0).
 Every branch starts from upstream `20872d4` unless marked as stacked. Any
 combination merges without conflicts (66 of 66 pairs checked earlier; the
 three newest branches checked against every other), and with all of them
-merged the suite passes (1,287 tests) and an end-to-end clean of a
+merged the suite passes (1,355 tests) and an end-to-end clean of a
 constant-rate clip is byte-identical to upstream's output. With
 `fix/output-fidelity` merged, a variable-rate source (the full
 `chinese1.mp4` is one) is deliberately no longer identical: its frames keep
@@ -43,6 +43,7 @@ off the output is byte-identical to upstream's, measured).
 | `fix/ocr-crop` | `faf4746` | Q-5: OCR reads each box's own frame, not the first sampled frame (`detect.py`) |
 | `fix/colour-tags` | `0b98964` | **Stacked on `fix/output-fidelity`.** Q-3: output carries the source's colour tags with a matching conversion (`colour.py`, `VIDEOWIPE_COLOUR`, `scripts/colour_roundtrip.py`, `docs/colour.md`) |
 | `feat/inpaint-quality` | `14c6d98` | Q-7, Q-8, Q-9: ground-truth harness and results only (`scripts/inpaint_quality_*.py`, `docs/inpaint-quality-experiments.md`); no `src/` change |
+| `feat/duration-sampling` | `4ab23be` | Q-6: sample count grows with duration for balanced and sensitive (`sampling.py`, one call in `planning.prepare`, `VIDEOWIPE_SAMPLE_INTERVAL`, `VIDEOWIPE_SAMPLE_MEMORY_MB`, `docs/sampling.md`) |
 | `docs/performance-prd` | this branch | The PRD and this file |
 | `main` | `a708c67` | Upstream plus the Switchyard MCP setup only; no feature branch is merged into it |
 | `chore/switchyard-mcp` | `f1d326d` | Merged to `main`; can be deleted |
@@ -168,10 +169,21 @@ a scratch prototype); it needs the band and window logic rewritten and is
 the best next quality workstream if the owner wants one.
 
 `fix/output-fidelity` now holds everything the PRD's delivery plan gave it.
-Not started: Q-6
-(`feat/duration-sampling`, needs a clip with known subtitle timings), Q-7 to
-Q-9, the long-term half of Q-4, the web UI items, and the constant-rate
-seconds-to-frames arithmetic in the UI and server found during Q-1.
+
+**Q-6 is done and pushed** on `feat/duration-sampling`: balanced samples
+about once a second on videos longer than 50 s (sensitive every 1.25 s past
+100 s; fast unchanged). On generated clips with known timings the fixed 50
+samples missed about a fifth of lines at 10 to 20 minutes; the rule finds
+all but 1 of 198 with fewer detector calls. The three bundled samples are
+unchanged. **Evidence is synthetic only**; a real long clip run on the Mac
+would be worth having, and the owner has not yet chosen between the 1 s
+default and 2 s (cheaper on long videos with no text).
+
+**Phase 3 is complete.** Not started, and not in Phase 3: the long-term
+half of Q-4, the web UI items (U-1 to U-4), P2-5 and P2-7, the
+constant-rate seconds-to-frames arithmetic in the UI and server found
+during Q-1, and the two follow-ups the experiments suggest (cropping the
+model's input around the mask; a memory budget for the OCR crops).
 
 Gotcha for new probes: several test suites replace `subprocess.run` or
 `subprocess.Popen` and count calls. Run ffprobe/ffmpeg helpers through

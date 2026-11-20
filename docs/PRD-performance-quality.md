@@ -677,10 +677,11 @@ One branch per group, each from upstream, each independently mergeable (C5).
 | 6 | `perf/detector-calls` | P2-3, P2-4 | C3 baselines |
 | 7 | `fix/output-fidelity` | Q-1 (done, the proper fix), Q-2 (done), Q-4 warning (done), Q-10 (done) | ffprobe comparisons |
 | 8 | `fix/ocr-crop` | Q-5 (done) | decision baseline |
-| 9 | `feat/duration-sampling` | Q-6 | ground-truth clip + baselines |
+| 9 | `feat/duration-sampling` | Q-6 (done) | ground-truth clip + baselines |
 | 10 | `perf/skip-windows`, `perf/recovery-reuse` | P2-2, recovery reuse (done) | equality tests |
 | 11 | `fix/colour-tags` (stacked on `fix/output-fidelity`) | Q-3 (done) | colour round trip |
-| 12 | later | P2-5, P2-7, Q-7…Q-9, U-1…U-4 | as stated |
+| 12 | `feat/inpaint-quality` | Q-7…Q-9 (measured, nothing built) | ground-truth harness |
+| 13 | later | P2-5, P2-7, U-1…U-4 | as stated |
 
 Steps 2–4 are safe to start immediately after step 1; nothing in them changes
 results. Steps 5, 6 and 9 must not be merged without their gate numbers.
@@ -871,6 +872,11 @@ across frames; a little more than the above) — not built.
 | Q-7 area filter for the model downscale | `feat/inpaint-quality` | **Measured, not worth shipping.** No PSNR gain (+0.01 dB at 1080p, better on 1 of 4 clips); slightly smoother and steadier, slightly worse at the seam. Nothing built. |
 | Q-8 masked model input | `feat/inpaint-quality` | **Measured, far worse.** The checkpoint paints the grey patch back as content (core PSNR 32.2 to 19.4 dB on one clip, 29.5 to 24.2 on another). Nothing built. |
 | Q-9 seam and softness | `feat/inpaint-quality` | Seam colour match: **measured, not worth shipping** (seam error down 3%, PSNR flat, a visible tint on one clip). Cropping the model input around the mask: **a real gain in a scratch prototype** (+2.3 dB at 1080p, +3.9 dB at 4K, every clip), not built: it is a rewrite of the band logic. See below. |
+| Q-6 duration-aware sampling | `feat/duration-sampling` | Done, on synthetic ground truth only. With balanced's fixed 50 samples about a fifth of subtitle lines are missed on 10 to 20 minute clips; sampling about once a second finds all but 1 of 198, with fewer detector calls in total. Clips up to 50 s (all three samples) are unchanged and the baselines are identical. `VIDEOWIPE_SAMPLE_INTERVAL`, `VIDEOWIPE_SAMPLE_MEMORY_MB`. **No real long clip was available; the default interval is the owner's call.** See below. |
+
+**Phase 3 is complete**: every item is either built and pushed or measured
+and recorded as not worth building. With all eighteen fork branches merged
+the suite passes (1,355 tests).
 
 **Q-1 evidence.** The hypothesis is confirmed on a bundled sample:
 `chinese1.mp4` is variable-rate (589 frame gaps of 0.04 s and one of 0.12 s
@@ -1202,6 +1208,63 @@ is no switch and nothing to turn off.
 - **Contact sheets** for a visual check were written to the session
   scratchpad and are not in the repository; `scripts/inpaint_quality_harness.py`
   and `scripts/inpaint_quality_report.py` regenerate them.
+
+#### Q-6 duration-aware sampling (done; synthetic evidence)
+
+`feat/duration-sampling` (from upstream; new `src/videowipe/sampling.py`,
+one call changed in `planning.prepare`, one help string, one README row).
+
+- **Rule.** `count = max(mode's count, ceil(duration / interval))`. Balanced
+  1 s; balanced with a subtitle target and sensitive 1.25 s (their band
+  fallback costs 7 detector calls per sample against 3); fast never grows.
+  So balanced is unchanged up to 50 s and sensitive up to 100 s. Frames are
+  still chosen by sequential ordinal (C1). Direct callers of
+  `detect_clean_candidates` get the count they pass.
+- **Switches.** `VIDEOWIPE_SAMPLE_INTERVAL=<seconds>`, or `off` for
+  upstream's fixed counts. `VIDEOWIPE_SAMPLE_MEMORY_MB` caps the extra
+  samples (default the smaller of 256 MB and 1/16 of available memory: about
+  72 minutes at 1 s for 16:9, after which spacing widens).
+- **Measurement** (`scripts/gen_long_clip.py`, `scripts/eval_sampling.py`;
+  generated clips with known line timings, real detector, balanced):
+
+  | Clip | Fixed 50: lines found (detector calls) | 1 s rule: lines found (calls) |
+  |---|---|---|
+  | 2 min | 18/20 (1,567) | 20/20 (1,259) |
+  | 3 min, 1080p | 23/26 (1,346) | 26/26 (1,171) |
+  | 5 min | 41/47 (2,572) | 47/47 (2,099) |
+  | 10 min | 82/102 (5,049) | 102/102 (4,171) |
+  | 10 min, dense | 109/116 (8,802) | 116/116 (7,506) |
+  | 20 min | 162/198 (10,644) | 197/198 (8,309) |
+
+  A 4 s interval recovers almost nothing and 2 s reaches 91%; 0.5 s adds
+  nothing. Calls fall because the boundary probes around each segment shrink
+  by more than the extra samples cost. Uncached wall time on this machine:
+  5 min clip 286 s to 236 s; 1080p clip 185 s to 164 s.
+- **False removals.** Zero before and after on five clips; on the dense clip
+  81 to 93 frames of 3,000, traced to isolated detector false positives that
+  denser samples happen to meet. Nothing is inferred across gaps (C2).
+- **Exactness for short clips.** The three samples keep 50/80/24 samples;
+  plans and masks byte-identical; fact and decision baselines identical.
+- **Tests and merges.** 560 passed on the branch (60 new; 21 fail with the
+  rule forced off); `git merge-tree` clean against the other seventeen;
+  1,355 passed with all eighteen merged.
+- **Limits and open points.**
+  - Synthetic only: one font, white outlined text, lines of 1 to 5 s, clips
+    at 5 to 10 fps. "A fifth lost" is not a real-footage estimate. No
+    variable-rate source and no 25 to 30 fps long clip was run.
+  - Cost where there is no text: 3 detector calls per second of video
+    regardless, so an hour with no subtitles is about 10,800 calls against
+    upstream's 150 (roughly 7 to 8 minutes at the reference Mac's 41 to 42
+    ms per call; estimate, not measured). A 2 s default halves that for 91%
+    recall. Owner's choice.
+  - A track on screen less than 40% of the time is never a candidate at any
+    sample count (the `consistency` threshold). Sparse captions were never
+    found. That is a separate limit and may matter more than sampling for
+    sparse-dialogue films.
+  - With the OCR extra installed, `fix/ocr-crop`'s kept crops now scale
+    with the sample count (about 250 KB per sample at 1080p) and have no
+    budget of their own.
+  - Fast mode on long videos is unchanged.
 
 ## 14. Open questions
 
