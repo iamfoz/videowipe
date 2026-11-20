@@ -693,6 +693,25 @@ def _bbox(points: np.ndarray, w: int, h: int) -> tuple[int, int, int, int]:
     return x1, y1, x2, y2
 
 
+_NO_CROP = np.empty((0, 0, 3), dtype=np.uint8)
+
+
+def _ocr_crops_by_box(
+    frame: np.ndarray, boxes: list[TextBox], w: int, h: int,
+) -> dict[int, np.ndarray]:
+    """Copy the pixels of each text-less box from the frame it was detected on.
+
+    Keyed by ``id(box)``; the boxes stay referenced for the whole detection
+    pass, so the ids cannot be reused. Copies, so a crop does not pin its frame.
+    """
+    crops: dict[int, np.ndarray] = {}
+    for box in boxes:
+        if not box.text:
+            x1, y1, x2, y2 = _bbox(box.points, w, h)
+            crops[id(box)] = frame[y1:y2 + 1, x1:x2 + 1].copy()
+    return crops
+
+
 def _zone(bbox: tuple[int, int, int, int], w: int, h: int) -> str:
     x1, y1, x2, y2 = bbox
     cx = (x1 + x2) / 2
@@ -1279,6 +1298,7 @@ def detect_clean_candidates(
     failed_frame_indices: set[int] = set()
     all_frame_boxes: list[tuple[int, list[TextBox]]] = []
     appearance_thumbnails: dict[int, np.ndarray] = {}
+    box_crops: dict[int, np.ndarray] = {}
     first_frame = None
     best_preview = None
     best_preview_score = -1
@@ -1340,6 +1360,8 @@ def detect_clean_candidates(
         sampled_frame_boxes[sample_index] = boxes
         all_frame_boxes.append((sample_index, boxes))
         appearance_thumbnails[sample_index] = _appearance_thumbnail(frame)
+        if recognizer is not None:
+            box_crops.update(_ocr_crops_by_box(frame, boxes, w, h))
         frame_mask = np.zeros((h, w), dtype=np.uint8)
         for box in boxes:
             cv2.fillPoly(frame_mask, [box.points.astype(np.int32)], 1)
@@ -1393,7 +1415,7 @@ def detect_clean_candidates(
                         if box.text:
                             text_samples.append(box.text)
                         elif recognizer is not None:
-                            crop = first_frame[by1:by2 + 1, bx1:bx2 + 1]
+                            crop = box_crops.get(id(box), _NO_CROP)
                             if crop.size > 0:
                                 ocr_crops.append(crop)
                 if overlapped:
