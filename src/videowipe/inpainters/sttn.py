@@ -198,10 +198,12 @@ class STTNInpainter:
                 "failed to find subtitles. Try providing a mask manually with -m."
             )
 
-        # Source timestamps for variable-rate sources (see videowipe/timing.py);
-        # constant-rate sources and VIDEOWIPE_SOURCE_TIMING=off are unchanged.
-        from videowipe.timing import plan_source_timing
-        source_timing = plan_source_timing(job)
+        # What to keep from the source: its frame timestamps (variable-rate sources,
+        # videowipe/timing.py) and its audio, metadata and subtitles (full runs,
+        # videowipe/tracks.py). VIDEOWIPE_SOURCE_TIMING=off and
+        # VIDEOWIPE_OUTPUT_TRACKS=off give upstream's command.
+        from videowipe.fidelity import plan_encode
+        encode_plan = plan_encode(job)
 
         cache = None
         if job.prediction_cache_dir is not None:
@@ -230,9 +232,10 @@ class STTNInpainter:
             "-r", str(fps),
             "-i", "-",
         ]
-        # Attach the original video as a second input so its audio stream (and
-        # metadata) survives. The trailing "?" on "1:a?" makes ffmpeg tolerate
-        # videos with no audio track instead of erroring out.
+        # Attach the original video as a second input so its audio stream survives
+        # (ffmpeg does not carry global metadata or subtitles over from it by
+        # itself; videowipe/tracks.py adds them). The trailing "?" on "1:a?" makes
+        # ffmpeg tolerate videos with no audio track instead of erroring out.
         if job.video_path:
             if job.trial_range is not None:
                 ffmpeg_cmd += ["-ss", str(first / fps)]
@@ -255,7 +258,7 @@ class STTNInpainter:
             video_out_path,
         ]
         stderr_file = tempfile.TemporaryFile()
-        pipe = source_timing.popen(ffmpeg_cmd, stderr_file)
+        pipe = encode_plan.popen(ffmpeg_cmd, stderr_file)
         stdin_closed = False
         processing_failed = False
         try:

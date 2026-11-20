@@ -476,18 +476,22 @@ class SourceTiming:
 
     # -- process -----------------------------------------------------------------------
 
-    def popen(self, cmd, stderr_file):
-        """``subprocess.Popen`` for the job's ffmpeg command. When the source's
-        timestamps are kept, the command is rewritten and ``stdin`` replaced by a
-        writer that stamps each frame; otherwise this is upstream's call."""
+    def command(self, cmd):
+        """The ffmpeg command for this job: rewritten for the source's timestamps
+        when they are kept (with a warning and upstream's command when it cannot
+        be), else *cmd* itself."""
         rewritten = self._rewrite(cmd) if self.active else None
         if self.active and rewritten is None:
             print("Warning: could not keep the source's frame timestamps with this "
                   "ffmpeg command; the output is retimed to a constant frame rate "
                   "and audio may drift.")
             self.clock = None
-        pipe = subprocess.Popen(rewritten or cmd, stdin=subprocess.PIPE, stderr=stderr_file)
-        if rewritten is not None:
+        return cmd if rewritten is None else rewritten
+
+    def attach(self, pipe):
+        """Replace ``pipe.stdin`` with the writer that stamps each frame, when
+        :meth:`command` rewrote the command. Returns *pipe*."""
+        if self.active:
             width, height = self._size
             pipe.stdin = MatroskaFrameWriter(
                 pipe.stdin, width, height, width * height * 3, self.timestamps(),
@@ -496,6 +500,12 @@ class SourceTiming:
             print(f"Keeping the source's frame timestamps ({kind} source, "
                   f"{len(self.clock.pts)} frames).")
         return pipe
+
+    def popen(self, cmd, stderr_file):
+        """``subprocess.Popen`` for the job's ffmpeg command: :meth:`command`,
+        then :meth:`attach`."""
+        pipe = subprocess.Popen(self.command(cmd), stdin=subprocess.PIPE, stderr=stderr_file)
+        return self.attach(pipe)
 
 
 def _warn_retimed(reason: str) -> None:
