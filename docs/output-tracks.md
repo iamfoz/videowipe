@@ -99,3 +99,17 @@ subtitle tracks written beside it.
   source said.
 * Tracks that this ffmpeg cannot copy or convert make the preflight fail and the job
   fall back to upstream's handling for everything, not track by track.
+
+## Sources the output cannot represent
+
+Frames are decoded to 8-bit BGR and encoded as 8-bit `yuv420p`, with no tone
+mapping. A source with more than 8 bits per sample, or with an HDR transfer
+(PQ or HLG), is still cleaned, and one line says what is lost, as soon as the
+source is read (`src/videowipe/source_checks.py`):
+
+- `Warning: the source is 10-bit; the cleaned video is made from 8-bit frames, so gradients may show banding.`
+- `Warning: the source is HDR (PQ); the cleaned video is 8-bit SDR with no tone mapping, so its colours will be wrong.`
+
+It is printed once per source in a process and changes nothing in the output.
+A source that ffprobe cannot read is not reported. Keeping the depth or the
+HDR signal needs a different frame path and is not done.
