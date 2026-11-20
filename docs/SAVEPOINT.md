@@ -16,11 +16,13 @@ servers updated to 1.24.0).
 Every branch starts from upstream `20872d4` unless marked as stacked. Any
 combination merges without conflicts (66 of 66 pairs checked earlier; the
 three newest branches checked against every other), and with all of them
-merged the suite passes (1,146 tests) and an end-to-end clean of a
+merged the suite passes (1,201 tests) and an end-to-end clean of a
 constant-rate clip is byte-identical to upstream's output. With
 `fix/output-fidelity` merged, a variable-rate source (the full
 `chinese1.mp4` is one) is deliberately no longer identical: its frames keep
-their own timestamps.
+their own timestamps; and any source with audio, metadata or subtitles
+differs in those tracks unless `VIDEOWIPE_OUTPUT_TRACKS=off` is set (with it
+off the output is byte-identical to upstream's, measured).
 
 | Branch | Head | Contents |
 |---|---|---|
@@ -37,7 +39,7 @@ their own timestamps.
 | `perf/blend-box` | `4133f14` | **Stacked on `perf/instrumentation`.** Compositing only inside the mask's box |
 | `perf/skip-windows` | `8c451f7` | **Stacked on `perf/blend-box`.** Model windows that cannot reach an emitted pixel are skipped; partial prediction-cache entries; `scripts/skip_windows_estimate.py` |
 | `perf/recovery-reuse` | `fa4503c` | **Stacked on `perf/detector-calls`.** Per-run memo for repeated contrast-recovery calls; `scripts/recovery_reuse_probe.py` |
-| `fix/output-fidelity` | `48cc050` | Q-1: source timestamps kept for variable-rate video (`src/videowipe/timing.py`, `VIDEOWIPE_SOURCE_TIMING`, `docs/source-timing.md`). Q-2, Q-4 (warning) and Q-10 are to follow on this branch |
+| `fix/output-fidelity` | `17cd7aa` | Q-1: source timestamps kept for variable-rate video (`timing.py`, `VIDEOWIPE_SOURCE_TIMING`, `docs/source-timing.md`). Q-2: audio copied, metadata and text subtitles kept (`tracks.py`, `fidelity.py`, `VIDEOWIPE_OUTPUT_TRACKS`, `docs/output-tracks.md`). Q-4 (warning) and Q-10 are to follow on this branch |
 | `docs/performance-prd` | this branch | The PRD and this file |
 | `main` | `a708c67` | Upstream plus the Switchyard MCP setup only; no feature branch is merged into it |
 | `chore/switchyard-mcp` | `f1d326d` | Merged to `main`; can be deleted |
@@ -92,7 +94,7 @@ identical work, so quote the boundary-probe figure. All other counters are
 identical on and off. No disturbed runs. Nothing from Phases 1 and 2 is left
 to measure except the long-file planning re-run noted above.
 
-## Phase 3 (authorised by the owner; Q-1 first)
+## Phase 3 (authorised by the owner; Q-1 and Q-2 done)
 
 **Q-1 is done and pushed** on `fix/output-fidelity`; details in the PRD's
 Phase 3 status. `chinese1.mp4` turned out to be variable-rate (one 0.12 s
@@ -111,10 +113,25 @@ Outstanding on Q-1:
   rate (0 to 2 frames off on `chinese1`). Not authorised or started; it needs
   the timestamp table in the plan or served to the UI.
 
-Not started: the rest of Phase 3 (audio copy, metadata and chapters, colour
-tags, 10-bit/HDR, the OCR wrong-frame crop, duration-scaled sampling) and the
-web UI items. The PRD's plan puts Q-2, Q-4 (warning) and Q-10 on
-`fix/output-fidelity` after Q-1.
+**Q-2 is done and pushed** on the same branch. Evidence first: chapters and
+track languages already survived; global metadata, track titles and soft
+subtitles were lost and audio was always re-encoded. Now, for full runs,
+AAC, MP3, AC-3, E-AC-3 and ALAC are copied (bit-identical packets), other
+codecs go to AAC at a rate derived from the source, metadata is mapped from
+the source and text subtitles become `mov_text`. Trials are unchanged.
+
+Outstanding on Q-2:
+
+- **Not played in QuickTime or any player, and only ffmpeg 6.1.1 was used.**
+  The owner runs `python -m pytest -q tests/test_output_tracks.py` on the Mac
+  and opens one cleaned file with audio in QuickTime. Leaving Opus and FLAC
+  out of the copy list is a compatibility judgement, not a measurement.
+- The HEVC/MKV output of `feat/h265-output` gets the metadata but still no
+  subtitles. Not built.
+
+Not started: the rest of Phase 3 (colour tags, 10-bit/HDR, the OCR
+wrong-frame crop, duration-scaled sampling) and the web UI items. The PRD's
+plan puts Q-4 (warning) and Q-10 on `fix/output-fidelity` next.
 
 ## Working rules agreed with the owner
 
@@ -168,4 +185,4 @@ web UI items. The PRD's plan puts Q-2, Q-4 (warning) and Q-10 on
   `VIDEOWIPE_MASK_WINDOW_BLUR`, `VIDEOWIPE_BLEND_WINDOW_RESIZE`,
   `VIDEOWIPE_BLEND_CACHE_MB`, `VIDEOWIPE_BAND_CROP_BUDGET_MB`,
   `VIDEOWIPE_SKIP_WINDOWS`, `VIDEOWIPE_RECOVERY_REUSE`,
-  `VIDEOWIPE_SOURCE_TIMING`.
+  `VIDEOWIPE_SOURCE_TIMING`, `VIDEOWIPE_OUTPUT_TRACKS`.

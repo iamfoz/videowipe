@@ -675,7 +675,7 @@ One branch per group, each from upstream, each independently mergeable (C5).
 | 4 | `perf/plan-masks` | P1-6 (done) | equality tests |
 | 5 | `perf/mps` | P1-7 (done), P2-1 | C4 + 15% bar |
 | 6 | `perf/detector-calls` | P2-3, P2-4 | C3 baselines |
-| 7 | `fix/output-fidelity` | Q-1 (done, the proper fix), Q-2, Q-4 (warning), Q-10 | ffprobe comparisons |
+| 7 | `fix/output-fidelity` | Q-1 (done, the proper fix), Q-2 (done), Q-4 (warning), Q-10 | ffprobe comparisons |
 | 8 | `fix/ocr-crop` | Q-5 | decision baseline |
 | 9 | `feat/duration-sampling` | Q-6 | ground-truth clip + baselines |
 | 10 | `perf/skip-windows`, `perf/recovery-reuse` | P2-2, recovery reuse (done) | equality tests |
@@ -862,6 +862,7 @@ across frames; a little more than the above) — not built.
 | Item | Branch | Outcome |
 |---|---|---|
 | Q-1 variable-frame-rate sources | `fix/output-fidelity` | Done (the proper fix, not the minimum). Constant-rate sources are exact: same ffmpeg arguments and pipe bytes, output byte-identical to upstream's. Variable-rate sources keep each frame's own timestamp. `VIDEOWIPE_SOURCE_TIMING=auto\|off\|on`. **Not yet run on the reference Mac's ffmpeg** (built and tested on 6.1.1). See below. |
+| Q-2 audio, metadata, chapters, subtitles | `fix/output-fidelity` | Done for full runs; trials unchanged. Audio is copied per track where MP4 carries the codec (bit-identical packets), otherwise AAC at a rate derived from the source; global metadata and text subtitles are carried over. `VIDEOWIPE_OUTPUT_TRACKS=auto\|off`; `off` is byte-identical to upstream. **Not checked in QuickTime or any player, nor on the reference Mac's ffmpeg.** See below. |
 
 **Q-1 evidence.** The hypothesis is confirmed on a bundled sample:
 `chinese1.mp4` is variable-rate (589 frame gaps of 0.04 s and one of 0.12 s
@@ -947,6 +948,83 @@ too, from this branch, without editing that one.
   plan or served to the UI: a separate item.
 - The messages are English lines on stdout; they are not shown in the web UI
   and have no catalogue entries on `feat/i18n-english`.
+
+**Q-2 evidence** (generated sources through the real encode path before the
+change, ffmpeg 6.1.1; the raw and Matroska pipes behave alike). The PRD's
+problem statement was partly wrong: chapters and track languages already
+survived.
+
+| Item | Before |
+|---|---|
+| Global metadata (title, artist, comment, creation time) | Lost: ffmpeg takes it from the first input, which is the frame pipe |
+| Chapters | Survive (ffmpeg copies them from the first input that has any). Left alone |
+| Track language | Survives |
+| Track title (MKV/WebM audio) | Lost |
+| Audio | Always re-encoded to AAC at ffmpeg's default: about 128k stereo, 70k mono, 275k for 5.1 |
+| Channel layout | `5.1(side)` from AC-3 or E-AC-3 came out as six channels with no layout |
+| Soft subtitles (mov_text, SubRip, ASS, bitmap) | All dropped |
+
+**Q-2 change** (`src/videowipe/tracks.py`; `src/videowipe/fidelity.py` applies
+it and then Q-1's timing to the finished command; `docs/output-tracks.md`).
+
+- Audio, per track and in order: AAC, MP3, AC-3, E-AC-3 and ALAC are
+  stream-copied. Opus, FLAC, PCM, Vorbis and anything else are encoded to
+  AAC. ffmpeg will write Opus and FLAC into MP4, so leaving them out is a
+  player-compatibility judgement, **not tested on QuickTime**.
+- AAC rate: 64 kb/s a channel as the base; a lossy source keeps its own rate
+  between 64 and 128 kb/s a channel; a lossless source gets 96 kb/s a
+  channel. ffmpeg's AAC encoder tops out near 275 kb/s for 5.1 and 7.1
+  whatever is asked, so the rule changes little for multichannel.
+  `5.1(side)` and `7.1(wide)` are converted to `5.1` and `7.1`.
+- `-map_metadata` from the source. A track title is stored as the MP4 handler
+  name, the only per-track name the muxer keeps (shown by ffprobe as
+  `handler_name`; not checked in a player).
+- SubRip, ASS, SSA, WebVTT and mov_text become `mov_text` with language,
+  title and default/forced flags; ASS styling is lost. Bitmap subtitles are
+  skipped with a notice.
+- The planned options are tried on the first half second of the source
+  before the job starts (C6). A failed probe or trial run gives upstream's
+  handling for the whole job, with a warning, not per track.
+- The second (HEVC/MKV) output of `feat/h265-output` gets the global
+  metadata from this branch; it already had chapters and its own audio
+  handling. It still has no subtitles: not built.
+
+**Q-2 results.**
+
+- Acceptance: source and output ffprobe listings match per stream (codec for
+  copied tracks, channels, layout, sample rate, language, flags, title as
+  handler name), as do format tags and chapters; copied audio is
+  bit-identical packet for packet for AAC (mono, stereo, 5.1), AC-3, E-AC-3,
+  MP3 and ALAC, from MP4 and MKV. Not compared, because they legitimately
+  differ: bit rate, start time, duration, frame counts, codec tag, encoder
+  and handler tags, the video stream, and the audio default flag (the MP4
+  muxer marks the first audio track default regardless).
+- With Q-1: the click-track test holds with copied audio, including an MKV
+  whose audio starts 21 ms early and a source whose video starts 0.5 s late.
+- Real clean of a 6-second `english1` clip with audio and added metadata:
+  283 audio packets bit-identical to the source, video timing unchanged,
+  metadata carried. With `VIDEOWIPE_OUTPUT_TRACKS=off` the output is
+  byte-identical to upstream's. The no-audio reference clip is byte-identical
+  to upstream's by default.
+- Suite: 594 passed on the branch (55 new); 1,201 passed with all fourteen
+  fork branches merged; `git merge-tree` clean against each of the other
+  thirteen. Making `auto` behave as `off` fails 33 of the 55 new tests.
+
+**Q-2 limits and open points.**
+
+- By default a source with audio, metadata or subtitles no longer gives a
+  file byte-identical to upstream's (the video stream is produced the same
+  way); set `VIDEOWIPE_OUTPUT_TRACKS=off` for byte comparisons.
+- Nothing was tried in a player, and only ffmpeg 6.1.1 was used.
+- A no-audio, no-metadata source prints "Keeping source metadata." though
+  nothing is mapped.
+- An MKV whose audio starts before zero has its chapters shifted by that
+  amount (21 ms in the test). This is ffmpeg's behaviour and was there
+  before.
+- One upstream test (`tests/test_boundaries.py`,
+  `test_sttn_inpaint_preserves_audio_and_reports_progress`) now pins the
+  switch to `off`, because it asserts upstream's audio arguments.
+- Trials still re-encode audio and carry no metadata or subtitles.
 
 ## 14. Open questions
 
