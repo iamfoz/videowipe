@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 import pytest
 
-from videowipe import timing
+from videowipe import fidelity, timing
 from videowipe.inpainters import sttn
 from videowipe.inpainters.base import InpaintJob
 from videowipe.tasks.base import read_frame_info
@@ -118,6 +118,9 @@ def constant_clip(tmp_path_factory):
 @pytest.fixture(autouse=True)
 def default_mode(monkeypatch):
     monkeypatch.delenv("VIDEOWIPE_SOURCE_TIMING", raising=False)
+    # Audio, metadata and subtitle handling (test_output_tracks.py) is pinned to
+    # upstream's here, so these tests compare the video timing path on its own.
+    monkeypatch.setenv("VIDEOWIPE_OUTPUT_TRACKS", "off")
 
 
 @pytest.fixture
@@ -159,7 +162,7 @@ def test_the_same_check_fails_when_source_timing_is_off(vfr_clip, tmp_path, stub
                                                         monkeypatch, capsys):
     monkeypatch.setenv("VIDEOWIPE_SOURCE_TIMING", "off")
     out = inpaint(vfr_clip, tmp_path)
-    assert "Keeping" not in capsys.readouterr().out
+    assert "frame timestamps" not in capsys.readouterr().out
     assert packet_times(out) != packet_times(vfr_clip)
     drift = [abs(a) for a in offsets(out)]
     # Constant-rate retiming puts the flashes 0.1, 0.5 and 0.29 s from their clicks.
@@ -218,8 +221,8 @@ def test_a_second_output_on_the_same_command_keeps_the_timestamps_too(tmp_path, 
          "-fps_mode", "passthrough", "-enc_time_base", "1:1000000", "-video_track_timescale", "90000",
          "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source)])
     second = tmp_path / "second.mkv"
-    original = timing.SourceTiming.popen
-    monkeypatch.setattr(timing.SourceTiming, "popen", lambda self, cmd, stderr: original(
+    original = fidelity.EncodePlan.popen
+    monkeypatch.setattr(fidelity.EncodePlan, "popen", lambda self, cmd, stderr: original(
         self, cmd + ["-map", "0:v", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(second)], stderr))
     out = inpaint(source, tmp_path)
     times = packet_times(source)

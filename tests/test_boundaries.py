@@ -1848,6 +1848,9 @@ def test_sttn_inpaint_preserves_audio_and_reports_progress(tmp_path, monkeypatch
     """
     from videowipe.inpainters.sttn import STTNInpainter
 
+    # This pins upstream's audio handling; the default is covered in test_output_tracks.py.
+    monkeypatch.setenv("VIDEOWIPE_OUTPUT_TRACKS", "off")
+
     # Build a tiny test video WITH an audio track so the -map 1:a? path has
     # a real stream to attach. 96x64, 8 frames, silent aac track.
     video = tmp_path / "input.mp4"
