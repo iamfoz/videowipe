@@ -679,7 +679,8 @@ One branch per group, each from upstream, each independently mergeable (C5).
 | 8 | `fix/ocr-crop` | Q-5 (done) | decision baseline |
 | 9 | `feat/duration-sampling` | Q-6 | ground-truth clip + baselines |
 | 10 | `perf/skip-windows`, `perf/recovery-reuse` | P2-2, recovery reuse (done) | equality tests |
-| 11 | later | P2-5, P2-7, Q-3, Q-7…Q-9, U-1…U-4 | as stated |
+| 11 | `fix/colour-tags` (stacked on `fix/output-fidelity`) | Q-3 (done) | colour round trip |
+| 12 | later | P2-5, P2-7, Q-7…Q-9, U-1…U-4 | as stated |
 
 Steps 2–4 are safe to start immediately after step 1; nothing in them changes
 results. Steps 5, 6 and 9 must not be merged without their gate numbers.
@@ -866,6 +867,7 @@ across frames; a little more than the above) — not built.
 | Q-4 warning for more than 8 bits or HDR | `fix/output-fidelity` | Done (the short-term item only). One line when the source is first read for a plan, in the CLI and on the server console; nothing in the output changes. |
 | Q-10 ProPainter adapter frame rate | `fix/output-fidelity` | Done, but not as the PRD said: passing the float would have stopped ProPainter. **Not run against a real ProPainter.** See below. |
 | Q-5 OCR crops the wrong frame | `fix/ocr-crop` | Done. The recogniser now gets each box's own pixels. On the three samples no type, reason or default selection changes; the recognised text changes in 2 of 9 regions. The decision and fact baselines run without OCR and cannot see this bug. See below. |
+| Q-3 colour tags and range | `fix/colour-tags` (stacked on `fix/output-fidelity`) | Done: measured first, the shift is real, so the fix was built. A tagged BT.709 HD source moved by up to 40 code values on saturated green; it now round-trips at the pipeline's noise floor and the output carries the source's tags. Untagged sources (all three bundled samples) are byte-identical. `VIDEOWIPE_COLOUR=auto\|off`. **Not run on the reference Mac's OpenCV or ffmpeg, nor viewed in any player.** See below. |
 
 **Q-1 evidence.** The hypothesis is confirmed on a bundled sample:
 `chinese1.mp4` is variable-rate (589 frame gaps of 0.04 s and one of 0.12 s
@@ -1094,6 +1096,65 @@ order are unchanged; a box with no kept crop is skipped.
   but a 4K source with many large boxes could reach hundreds of megabytes.
   Which three crops to recognise (first three today) was not changed: a
   spread over time reads more distinct lines but gives no measured gain.
+
+#### Q-3 colour tags and range (done, measured first)
+
+**Result: the hypothesis is confirmed and the fix is built**
+(`fix/colour-tags`, stacked on `fix/output-fidelity` because it is a third
+step in `fidelity.py`; one upstream-facing edit, in that file).
+
+- **Cause, as measured here** (OpenCV 4.14.0, ffmpeg 6.1.1). OpenCV honours
+  BT.709 and BT.2020 matrix tags and the full-range tag when decoding, and
+  uses BT.601 for untagged or BT.601-tagged video at any size. ffmpeg then
+  encodes the BGR frames with BT.601 limited range at every size and writes
+  no colour tags. So a tagged BT.709 source is decoded with one matrix and
+  encoded with another.
+- **Measurement** (`scripts/colour_roundtrip.py`; 12 synthetic source
+  classes of bars and saturated patches through the real pipeline with a
+  stub model; colour difference dE CIE76 with source and output each read
+  as a player reads their tags; about 2.3 is just noticeable).
+
+  | Source class | Upstream: mean / worst dE | Now: mean / worst dE |
+  |---|---|---|
+  | BT.709 limited, HD, tagged | 6.6 / 19.1 | 1.1 / 1.9 |
+  | BT.709 full range, HD | 6.7 / 19.2 | 0.4 / 1.5 |
+  | BT.601 tagged, at HD size | 6.5 / 19.1 | 1.2 / 2.1 |
+  | BT.2020 matrix tag only | 6.6 / 19.6 | 1.1 / 2.1 |
+  | BT.709 4:2:2, 4:4:4, 10-bit | 6.4 to 6.6 / 19.2 | 0.7 to 1.1 / 1.4 to 2.0 |
+  | BT.601 SD tagged; BT.709 at SD size | 1.2 / 2.1 | same |
+  | Untagged SD | 1.2 / 2.1 | unchanged (byte-identical) |
+  | Untagged HD | 4.2 / 17.6 | unchanged (byte-identical) |
+  | BT.2020 with 2020 primaries and transfer | 25.1 / 91.2 | unchanged (falls back with a warning) |
+
+  About 1.1 dE is the pipeline's own floor (8-bit BGR, 4:2:0, crf 18).
+- **What it does.** Reads the source's tags; measures, on this machine, which
+  matrix and range the installed OpenCV decodes such a stream with; tells
+  ffmpeg to convert back with the same matrix and range and writes the
+  source's tags; checks those options on known colours with this ffmpeg
+  first. Any failure is one warning line and upstream's command. A decoder
+  that ignores the tags therefore gets tags only, with unchanged pixels. The
+  optional HEVC copy is converted and tagged too (limited range, as before).
+- **Unchanged by design.** `VIDEOWIPE_COLOUR=off`; sources with no colour
+  tags; HDR sources; and, added in review, a decoder that reads the range
+  differently from the source's tag.
+- **Tests and merges.** 674 passed on the branch (52 new; 22 fail with the
+  switch forced off); 1,287 passed with all sixteen fork branches merged;
+  `git merge-tree` clean against the other fifteen. Cost: about 0.7 s per
+  job for the two checks.
+- **Not done, and open.**
+  - Never run on the reference Mac. `python scripts/colour_roundtrip.py
+    --probe decode` there takes seconds and shows whether its OpenCV behaves
+    as measured here. Nothing was viewed in a player.
+  - The only real-footage end-to-end runs were SD (`english1.mp4` is 852x480
+    and untagged: identical output with the switch on or off). The HD
+    evidence is synthetic patches.
+  - Untagged HD is wrong upstream too (players assume BT.709, OpenCV decodes
+    BT.601 and clips saturated colours). It cannot be fixed at the encode;
+    it needs a change on the decode side and is not attempted.
+  - Full-range sources stay full range (tagged `pc`). Converting to limited
+    range would be safer for players that ignore the flag; owner's choice.
+  - BT.2020 with 2020 primaries: OpenCV returns colours matching no standard
+    matrix, so it is left as upstream with a warning.
 
 ## 14. Open questions
 

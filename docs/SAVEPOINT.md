@@ -16,7 +16,7 @@ servers updated to 1.24.0).
 Every branch starts from upstream `20872d4` unless marked as stacked. Any
 combination merges without conflicts (66 of 66 pairs checked earlier; the
 three newest branches checked against every other), and with all of them
-merged the suite passes (1,235 tests) and an end-to-end clean of a
+merged the suite passes (1,287 tests) and an end-to-end clean of a
 constant-rate clip is byte-identical to upstream's output. With
 `fix/output-fidelity` merged, a variable-rate source (the full
 `chinese1.mp4` is one) is deliberately no longer identical: its frames keep
@@ -41,6 +41,7 @@ off the output is byte-identical to upstream's, measured).
 | `perf/recovery-reuse` | `fa4503c` | **Stacked on `perf/detector-calls`.** Per-run memo for repeated contrast-recovery calls; `scripts/recovery_reuse_probe.py` |
 | `fix/output-fidelity` | `291da43` | Q-1: source timestamps kept for variable-rate video (`timing.py`, `VIDEOWIPE_SOURCE_TIMING`, `docs/source-timing.md`). Q-2: audio copied, metadata and text subtitles kept (`tracks.py`, `fidelity.py`, `VIDEOWIPE_OUTPUT_TRACKS`, `docs/output-tracks.md`). Q-4: warning for sources above 8 bits or HDR (`source_checks.py`). Q-10: ProPainter adapter encodes at the real frame rate |
 | `fix/ocr-crop` | `faf4746` | Q-5: OCR reads each box's own frame, not the first sampled frame (`detect.py`) |
+| `fix/colour-tags` | `0b98964` | **Stacked on `fix/output-fidelity`.** Q-3: output carries the source's colour tags with a matching conversion (`colour.py`, `VIDEOWIPE_COLOUR`, `scripts/colour_roundtrip.py`, `docs/colour.md`) |
 | `docs/performance-prd` | this branch | The PRD and this file |
 | `main` | `a708c67` | Upstream plus the Switchyard MCP setup only; no feature branch is merged into it |
 | `chore/switchyard-mcp` | `f1d326d` | Merged to `main`; can be deleted |
@@ -146,8 +147,19 @@ classification. The Makefile baselines run with OCR off and cannot see it;
 they were also run with `--ocr rapidocr` and are unchanged. Open: the kept
 crops have no memory budget.
 
+**Q-3 is done and pushed** on `fix/colour-tags` (stacked on
+`fix/output-fidelity`). Measured first: tagged BT.709 HD sources shifted by
+up to 40 code values on saturated colours because OpenCV decodes with the
+tagged matrix and ffmpeg encodes with BT.601 and writes no tags. The fix
+measures what the installed OpenCV does and makes the encode its inverse,
+then copies the tags. Untagged sources (all three samples) are
+byte-identical. **Owner's Mac check:** `python scripts/colour_roundtrip.py
+--probe decode` (seconds), then `python -m pytest -q tests/test_colour.py`,
+and look at one cleaned tagged HD file in QuickTime. Open: untagged HD is
+wrong upstream and not fixed; full-range sources stay full range.
+
 `fix/output-fidelity` now holds everything the PRD's delivery plan gave it.
-Not started: Q-3 (colour tags: measure first), Q-6
+Not started: Q-6
 (`feat/duration-sampling`, needs a clip with known subtitle timings), Q-7 to
 Q-9, the long-term half of Q-4, the web UI items, and the constant-rate
 seconds-to-frames arithmetic in the UI and server found during Q-1.
