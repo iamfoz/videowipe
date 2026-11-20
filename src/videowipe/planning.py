@@ -263,6 +263,7 @@ def prepare(
 ) -> CleanPlanDraft:
     """Interpret a request, detect candidates, and return its reviewable draft."""
     from videowipe.detect import detect_clean_candidates
+    from videowipe.sampling import planned_sample_count
 
     target_list = list(targets)
     region_list = list(regions)
@@ -297,7 +298,9 @@ def prepare(
         detect_text=detect_text,
         include_logo="logo" in mentioned_targets,
         include_translucent_watermark="watermark" in mentioned_targets,
-        sample_count=params["sample_count"],
+        sample_count=planned_sample_count(
+            video_path, detect_mode, params["subtitle_fallback"], params["sample_count"],
+        ),
         consistency=params["consistency"],
         subtitle_fallback=params["subtitle_fallback"],
         recognizer=recognizer_builder(ocr),

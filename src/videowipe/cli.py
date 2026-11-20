@@ -87,7 +87,8 @@ def _build_parser():
         "--detect-mode",
         choices=["fast", "balanced", "sensitive"],
         default="balanced",
-        help="Detection preset: fast (24 frames), balanced (50), sensitive (80)",
+        help="Detection preset: fast (24 frames), balanced (50), sensitive (80); "
+             "balanced and sensitive sample more on long videos (docs/sampling.md)",
     )
     clean.add_argument(
         "--ocr",
