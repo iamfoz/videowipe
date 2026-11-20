@@ -676,7 +676,7 @@ One branch per group, each from upstream, each independently mergeable (C5).
 | 5 | `perf/mps` | P1-7 (done), P2-1 | C4 + 15% bar |
 | 6 | `perf/detector-calls` | P2-3, P2-4 | C3 baselines |
 | 7 | `fix/output-fidelity` | Q-1 (done, the proper fix), Q-2 (done), Q-4 warning (done), Q-10 (done) | ffprobe comparisons |
-| 8 | `fix/ocr-crop` | Q-5 | decision baseline |
+| 8 | `fix/ocr-crop` | Q-5 (done) | decision baseline |
 | 9 | `feat/duration-sampling` | Q-6 | ground-truth clip + baselines |
 | 10 | `perf/skip-windows`, `perf/recovery-reuse` | P2-2, recovery reuse (done) | equality tests |
 | 11 | later | P2-5, P2-7, Q-3, Q-7…Q-9, U-1…U-4 | as stated |
@@ -865,6 +865,7 @@ across frames; a little more than the above) — not built.
 | Q-2 audio, metadata, chapters, subtitles | `fix/output-fidelity` | Done for full runs; trials unchanged. Audio is copied per track where MP4 carries the codec (bit-identical packets), otherwise AAC at a rate derived from the source; global metadata and text subtitles are carried over. `VIDEOWIPE_OUTPUT_TRACKS=auto\|off`; `off` is byte-identical to upstream. **Not checked in QuickTime or any player, nor on the reference Mac's ffmpeg.** See below. |
 | Q-4 warning for more than 8 bits or HDR | `fix/output-fidelity` | Done (the short-term item only). One line when the source is first read for a plan, in the CLI and on the server console; nothing in the output changes. |
 | Q-10 ProPainter adapter frame rate | `fix/output-fidelity` | Done, but not as the PRD said: passing the float would have stopped ProPainter. **Not run against a real ProPainter.** See below. |
+| Q-5 OCR crops the wrong frame | `fix/ocr-crop` | Done. The recogniser now gets each box's own pixels. On the three samples no type, reason or default selection changes; the recognised text changes in 2 of 9 regions. The decision and fact baselines run without OCR and cannot see this bug. See below. |
 
 **Q-1 evidence.** The hypothesis is confirmed on a bundled sample:
 `chinese1.mp4` is variable-rate (589 frame gaps of 0.04 s and one of 0.12 s
@@ -1059,6 +1060,40 @@ item in §9 and is not started.
 
 Suite after Q-4 and Q-10: 622 passed on the branch; 1,229 with all fourteen
 fork branches merged; `git merge-tree` clean against the other thirteen.
+
+**Q-5.** `detect.py:1320` took each box's rectangle from the sampled frame it
+was found on but the pixels from the first sampled frame. The fix
+(`fix/ocr-crop`, 23 lines in `detect.py`, placed where no other branch has a
+hunk) keeps a copy of each text-less box's crop while sampling, only when a
+recogniser is given, and recognises that. The three-crop budget and the
+order are unchanged; a box with no kept crop is skipped.
+
+- **When the path is live.** The default detector never sets a box's text,
+  and `--ocr auto` (the CLI, engine and web default) finds a recogniser only
+  if `rapidocr-onnxruntime` is installed (`pip install videowipe[ocr]`).
+  Without that extra the path is dead and this fix changes nothing.
+- **On the samples** (real detector, rapidocr 1.2.3, 50 samples): of the 27
+  crops actually recognised, 19 differ in pixels; 14 of those read the same
+  text, 3 read nothing before and text now (`english1`, a subtitle that first
+  appears at frame 116: nothing → "Areyouserious?"), and 2 read different
+  text (`others`: "I need you now O" → "Lneedyounow", "needyounow" — the
+  wrong frame happened to read better). Type, reason and `default_remove`
+  are identical in all 9 regions: none of the text matches the timestamp or
+  watermark patterns, so no flip was possible. The benefit on these samples
+  is therefore small; the flip is shown only by a synthetic test (timestamp
+  or `@brand` text that appears after the first sample).
+- **Baselines.** `make decision-baseline` and `make fact-baseline` run with
+  `--ocr off`, so they cannot see this bug. Run both ways (off, and
+  `--ocr rapidocr`), every metric is identical before and after to six
+  decimal places; with OCR on, the only differences are the two text samples
+  above.
+- **Tests and merges.** 506 passed on the branch (6 new; three of them fail
+  with upstream's line restored); 1,235 passed with all fifteen fork branches
+  merged; `git merge-tree` clean against the other fourteen.
+- **Open.** The kept crops have no memory budget: 1 to 18 MB on the samples,
+  but a 4K source with many large boxes could reach hundreds of megabytes.
+  Which three crops to recognise (first three today) was not changed: a
+  spread over time reads more distinct lines but gives no measured gain.
 
 ## 14. Open questions
 
