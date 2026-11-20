@@ -325,6 +325,8 @@ def compute_source(video_path: str) -> Source:
     """Read video identity (dimensions, fps, frame_count) and SHA-256."""
     if not os.path.isfile(video_path):
         raise InvalidInputError(f"Video not found: {video_path}")
+    from videowipe.source_checks import warn_about_source
+    warn_about_source(video_path)  # more than 8 bits or HDR: said once, changes nothing
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise InvalidInputError(f"Cannot open video: {video_path}")
