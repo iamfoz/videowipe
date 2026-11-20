@@ -675,7 +675,7 @@ One branch per group, each from upstream, each independently mergeable (C5).
 | 4 | `perf/plan-masks` | P1-6 (done) | equality tests |
 | 5 | `perf/mps` | P1-7 (done), P2-1 | C4 + 15% bar |
 | 6 | `perf/detector-calls` | P2-3, P2-4 | C3 baselines |
-| 7 | `fix/output-fidelity` | Q-1 (done, the proper fix), Q-2 (done), Q-4 (warning), Q-10 | ffprobe comparisons |
+| 7 | `fix/output-fidelity` | Q-1 (done, the proper fix), Q-2 (done), Q-4 warning (done), Q-10 (done) | ffprobe comparisons |
 | 8 | `fix/ocr-crop` | Q-5 | decision baseline |
 | 9 | `feat/duration-sampling` | Q-6 | ground-truth clip + baselines |
 | 10 | `perf/skip-windows`, `perf/recovery-reuse` | P2-2, recovery reuse (done) | equality tests |
@@ -863,6 +863,8 @@ across frames; a little more than the above) — not built.
 |---|---|---|
 | Q-1 variable-frame-rate sources | `fix/output-fidelity` | Done (the proper fix, not the minimum). Constant-rate sources are exact: same ffmpeg arguments and pipe bytes, output byte-identical to upstream's. Variable-rate sources keep each frame's own timestamp. `VIDEOWIPE_SOURCE_TIMING=auto\|off\|on`. **Not yet run on the reference Mac's ffmpeg** (built and tested on 6.1.1). See below. |
 | Q-2 audio, metadata, chapters, subtitles | `fix/output-fidelity` | Done for full runs; trials unchanged. Audio is copied per track where MP4 carries the codec (bit-identical packets), otherwise AAC at a rate derived from the source; global metadata and text subtitles are carried over. `VIDEOWIPE_OUTPUT_TRACKS=auto\|off`; `off` is byte-identical to upstream. **Not checked in QuickTime or any player, nor on the reference Mac's ffmpeg.** See below. |
+| Q-4 warning for more than 8 bits or HDR | `fix/output-fidelity` | Done (the short-term item only). One line when the source is first read for a plan, in the CLI and on the server console; nothing in the output changes. |
+| Q-10 ProPainter adapter frame rate | `fix/output-fidelity` | Done, but not as the PRD said: passing the float would have stopped ProPainter. **Not run against a real ProPainter.** See below. |
 
 **Q-1 evidence.** The hypothesis is confirmed on a bundled sample:
 `chinese1.mp4` is variable-rate (589 frame gaps of 0.04 s and one of 0.12 s
@@ -1025,6 +1027,38 @@ it and then Q-1's timing to the finished command; `docs/output-tracks.md`).
   `test_sttn_inpaint_preserves_audio_and_reports_progress`) now pins the
   switch to `off`, because it asserts upstream's audio arguments.
 - Trials still re-encode audio and carry no metadata or subtitles.
+
+**Q-4 (warning).** `src/videowipe/source_checks.py`, called from
+`plan.compute_source`: ffprobe gives the pixel format, bits per raw sample
+and transfer; a PQ or HLG transfer, or more than 8 bits, prints one warning
+per source per process. A source that cannot be probed is not reported. The
+web UI's own HDR warning is unchanged and still says nothing about 10-bit SDR
+sources (a UI string, which would also need a catalogue entry on
+`feat/i18n-english`). Keeping the depth or the HDR signal is the long-term
+item in §9 and is not started.
+
+**Q-10.** Read against ProPainter's current `inference_propainter.py`
+(fetched from its repository; other versions not checked):
+
+- `--save_fps` is declared `type=int`, so the PRD's fix ("pass the float")
+  would make ProPainter exit on its arguments. The adapter now passes the
+  rounded rate, asks for the frames as well (`--save_frames`) and encodes
+  them itself at the source's real rate.
+- ProPainter names its result folder after its input, which is the adapter's
+  `frames` directory, while the adapter looked in a folder named after the
+  source video. Unless the video happened to be called `frames`, the adapter
+  would have ended with "ProPainter output not found" after ProPainter had
+  finished. Both locations are now accepted. **This is from reading the two
+  programs, not from a run**: ProPainter needs its own checkout, weights and
+  in practice a GPU, none of which were available.
+- If no frames come back, ProPainter's own video is used, with a warning when
+  the rate is not a whole number.
+- Not changed: the adapter's output has no audio and a constant rate (its
+  input rate is whatever imageio reports), and all frames are held in memory
+  to encode.
+
+Suite after Q-4 and Q-10: 622 passed on the branch; 1,229 with all fourteen
+fork branches merged; `git merge-tree` clean against the other thirteen.
 
 ## 14. Open questions
 
