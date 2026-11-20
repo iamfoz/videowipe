@@ -406,6 +406,11 @@ def plan_output_colour(job) -> OutputColour:
               "output carries no colour tags.")
         return OutputColour()
     matrix, rng = decoded
+    if rng != (source.range or "tv"):
+        # BGR then holds the wrong levels, and no tag on the output would describe them.
+        print("Warning: this OpenCV read the source's colour range differently from its tag; "
+              "the output carries no colour tags.")
+        return OutputColour()
     tags = {"-colorspace": source.space, "-color_primaries": source.primaries,
             "-color_trc": source.transfer, "-color_range": rng}
     tags = {flag: value for flag, value in tags.items() if value is not None}

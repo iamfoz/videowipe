@@ -163,6 +163,8 @@ Any other value means `auto`.
   * the decoder's conversion matches none of the six readings ("could not tell how
     this OpenCV converts the source's colours"; this is what BT.2020 with 2020
     primaries and transfer tags does with OpenCV 4.14);
+  * the decoder read the source with a different range from its tag ("read the
+    source's colour range differently from its tag"; not seen with OpenCV 4.14);
   * this ffmpeg does not apply the options to the check ("did not apply the source's
     colour tags with a matching conversion");
   * the ffmpeg command is not the shape expected ("could not keep the source's
