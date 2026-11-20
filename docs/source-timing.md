@@ -15,9 +15,12 @@ sound, by up to a few frames and more across a long gap.
 `videowipe/timing.py` looks at the source before ffmpeg starts and chooses one
 of two behaviours.
 
-**Constant-rate source (the common case): nothing changes.** The ffmpeg
-arguments and the bytes written to its standard input are exactly what they were
-before this module existed, so the output is byte-identical.
+**Constant-rate source (the common case): the video path does not change.** The
+ffmpeg arguments that concern the video and the bytes written to its standard input
+are exactly what they were before this module existed. With
+`VIDEOWIPE_OUTPUT_TRACKS=off` (see [output-tracks.md](output-tracks.md)) the whole
+command is upstream's and the output is byte-identical; by default the audio,
+metadata and subtitle handling described there also applies.
 
 **Variable-rate source: its own timestamps are kept.** The frames are written as
 a minimal Matroska stream (one cluster per frame, each stamped with the source
