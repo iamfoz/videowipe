@@ -42,6 +42,7 @@ off the output is byte-identical to upstream's, measured).
 | `fix/output-fidelity` | `291da43` | Q-1: source timestamps kept for variable-rate video (`timing.py`, `VIDEOWIPE_SOURCE_TIMING`, `docs/source-timing.md`). Q-2: audio copied, metadata and text subtitles kept (`tracks.py`, `fidelity.py`, `VIDEOWIPE_OUTPUT_TRACKS`, `docs/output-tracks.md`). Q-4: warning for sources above 8 bits or HDR (`source_checks.py`). Q-10: ProPainter adapter encodes at the real frame rate |
 | `fix/ocr-crop` | `faf4746` | Q-5: OCR reads each box's own frame, not the first sampled frame (`detect.py`) |
 | `fix/colour-tags` | `0b98964` | **Stacked on `fix/output-fidelity`.** Q-3: output carries the source's colour tags with a matching conversion (`colour.py`, `VIDEOWIPE_COLOUR`, `scripts/colour_roundtrip.py`, `docs/colour.md`) |
+| `feat/inpaint-quality` | `14c6d98` | Q-7, Q-8, Q-9: ground-truth harness and results only (`scripts/inpaint_quality_*.py`, `docs/inpaint-quality-experiments.md`); no `src/` change |
 | `docs/performance-prd` | this branch | The PRD and this file |
 | `main` | `a708c67` | Upstream plus the Switchyard MCP setup only; no feature branch is merged into it |
 | `chore/switchyard-mcp` | `f1d326d` | Merged to `main`; can be deleted |
@@ -157,6 +158,14 @@ byte-identical. **Owner's Mac check:** `python scripts/colour_roundtrip.py
 --probe decode` (seconds), then `python -m pytest -q tests/test_colour.py`,
 and look at one cleaned tagged HD file in QuickTime. Open: untagged HD is
 wrong upstream and not fixed; full-range sources stay full range.
+
+**Q-7, Q-8 and Q-9 are measured and nothing was built** (`feat/inpaint-quality`
+holds the harness and write-up). Area downscale: no gain. Masked model
+input: 5 to 14 dB worse, the checkpoint paints the fill back. Seam colour
+match: not worth it. The one real gain is cropping the model's input around
+the mask instead of the full-width band (+2.3 dB at 1080p, +3.9 dB at 4K in
+a scratch prototype); it needs the band and window logic rewritten and is
+the best next quality workstream if the owner wants one.
 
 `fix/output-fidelity` now holds everything the PRD's delivery plan gave it.
 Not started: Q-6

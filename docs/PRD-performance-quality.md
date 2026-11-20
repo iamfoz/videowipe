@@ -868,6 +868,9 @@ across frames; a little more than the above) — not built.
 | Q-10 ProPainter adapter frame rate | `fix/output-fidelity` | Done, but not as the PRD said: passing the float would have stopped ProPainter. **Not run against a real ProPainter.** See below. |
 | Q-5 OCR crops the wrong frame | `fix/ocr-crop` | Done. The recogniser now gets each box's own pixels. On the three samples no type, reason or default selection changes; the recognised text changes in 2 of 9 regions. The decision and fact baselines run without OCR and cannot see this bug. See below. |
 | Q-3 colour tags and range | `fix/colour-tags` (stacked on `fix/output-fidelity`) | Done: measured first, the shift is real, so the fix was built. A tagged BT.709 HD source moved by up to 40 code values on saturated green; it now round-trips at the pipeline's noise floor and the output carries the source's tags. Untagged sources (all three bundled samples) are byte-identical. `VIDEOWIPE_COLOUR=auto\|off`. **Not run on the reference Mac's OpenCV or ffmpeg, nor viewed in any player.** See below. |
+| Q-7 area filter for the model downscale | `feat/inpaint-quality` | **Measured, not worth shipping.** No PSNR gain (+0.01 dB at 1080p, better on 1 of 4 clips); slightly smoother and steadier, slightly worse at the seam. Nothing built. |
+| Q-8 masked model input | `feat/inpaint-quality` | **Measured, far worse.** The checkpoint paints the grey patch back as content (core PSNR 32.2 to 19.4 dB on one clip, 29.5 to 24.2 on another). Nothing built. |
+| Q-9 seam and softness | `feat/inpaint-quality` | Seam colour match: **measured, not worth shipping** (seam error down 3%, PSNR flat, a visible tint on one clip). Cropping the model input around the mask: **a real gain in a scratch prototype** (+2.3 dB at 1080p, +3.9 dB at 4K, every clip), not built: it is a rewrite of the band logic. See below. |
 
 **Q-1 evidence.** The hypothesis is confirmed on a bundled sample:
 `chinese1.mp4` is variable-rate (589 frame gaps of 0.04 s and one of 0.12 s
@@ -1155,6 +1158,50 @@ step in `fidelity.py`; one upstream-facing edit, in that file).
     range would be safer for players that ignore the flag; owner's choice.
   - BT.2020 with 2020 primaries: OpenCV returns colours matching no standard
     matrix, so it is left as upstream with a warning.
+
+#### Q-7, Q-8, Q-9 inpainting-quality experiments (measured; nothing built)
+
+`feat/inpaint-quality` (from upstream, new files only: a ground-truth
+harness in `scripts/inpaint_quality_*.py`, 8 tests, and the full write-up
+in `docs/inpaint-quality-experiments.md`). No `src/` file changes, so there
+is no switch and nothing to turn off.
+
+- **Harness.** Text is burned with ffmpeg into real footage that has none,
+  the real `STTNInpainter.inpaint` runs on the ONNX backend, and the frames
+  are scored against the clean original (PSNR, SSIM, error in the core and
+  at the seam, flicker). Eight clips: two 480p, four 1080p, two 4K. The 4K
+  clips are upscaled 1080p, so they probably understate aliasing. Repeat
+  runs are byte-identical; clips differ by 2.3 dB SD, so only same-clip
+  differences are read.
+- **Q-7 (area downscale).** Paired core PSNR +0.01 dB at 1080p (SD 0.55,
+  better on 1 of 4), +0.05 at 4K. SSIM +0.004 and flicker about 6% lower on
+  every clip; seam error, sharpness and edge brightness slightly worse on
+  every clip. Cubic or Lanczos upscale adds nothing. Not shipped.
+- **Q-8 (masked input).** The ONNX graphs and the model code take no mask.
+  Filling the masked pixels with grey, the frame mean or a Telea pre-fill
+  costs 5 to 14 dB: the model reproduces the fill. There was also no
+  ghosting to cure (ghost correlation within 0.02 of zero on every clip).
+  Not shipped; the PRD's premise was wrong for this checkpoint.
+- **Q-9a (seam colour match).** The existing seam step is 1 to 2 levels of
+  255. Matching it lowers seam error 3% on every clip, leaves PSNR flat,
+  raises flicker slightly and tints one 4K clip visibly. Not shipped.
+- **Q-9b (crop around the mask), prototype only.** Giving the model a
+  16:3 box around the mask instead of the full-width band, at the same
+  model cost, gains +2.32 dB (SD 1.36) at 1080p and +3.93 dB (SD 1.61) at
+  4K, better on all six clips; flicker falls about a quarter. The crop must
+  never be enlarged: at 480p a tight box loses 8.5 dB. Direction: moderate
+  confidence; size: low (six clips). **This is the best follow-up for
+  quality**, but it needs the band, window and cache-key logic rewritten
+  (and re-proving on `perf/blend-box` and `perf/skip-windows`), so it is a
+  workstream of its own. Unmeasured: boxes that move between segments,
+  several boxes, full-width text.
+- **Checks.** 508 passed on the branch; `git merge-tree` clean against all
+  sixteen other branches. The harness patches upstream's blend and resize
+  call sites, so it runs on upstream's code only, not on the `perf/`
+  compositing rewrites.
+- **Contact sheets** for a visual check were written to the session
+  scratchpad and are not in the repository; `scripts/inpaint_quality_harness.py`
+  and `scripts/inpaint_quality_report.py` regenerate them.
 
 ## 14. Open questions
 
