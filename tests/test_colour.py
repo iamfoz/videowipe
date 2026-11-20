@@ -241,12 +241,14 @@ def test_where_the_decoder_already_matches_ffmpegs_default_only_tags_are_added(j
     ("decoder", "could not tell how this OpenCV"),
     ("probe", "could not read the source's colour tags"),
     ("encode", "did not apply the source's colour tags"),
+    ("range", "colour range differently"),
 ])
 def test_every_failure_falls_back_with_one_line(what, expected, job, monkeypatch, capsys):
     source = colour.SourceColour(1280, 720, "yuv420p", "smpte240m", None, None, "tv") \
         if what == "matrix" else HD709
     stub(monkeypatch, None if what == "probe" else source,
-         decoded=None if what == "decoder" else ("bt709", "tv"), encode_ok=what != "encode")
+         decoded=None if what == "decoder" else ("bt709", "pc" if what == "range" else "tv"),
+         encode_ok=what != "encode")
     plan = colour.plan_output_colour(job)
     assert not plan.active
     lines = capsys.readouterr().out.strip().splitlines()
