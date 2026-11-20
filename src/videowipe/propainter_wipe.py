@@ -126,7 +126,11 @@ def main(argv=None):
             "-m", mask_path,
             "-o", pp_tmp,
             "--fp16",
-            "--save_fps", str(int(fps)),
+            # ProPainter only accepts a whole number here and uses it for its own
+            # inpaint_out.mp4. The frames are saved as well and encoded below at
+            # the source's real rate (29.97 would otherwise become 29 or 30).
+            "--save_fps", str(max(1, round(fps))),
+            "--save_frames",
         ]
         log_handle = None
         output_sink = subprocess.DEVNULL
@@ -157,17 +161,26 @@ def main(argv=None):
                 print(f"Details written to: {args.log_file}", file=sys.stderr)
             return 1
 
+        # ProPainter names its result folder after its input, which is the
+        # frames directory; the source's own name is kept for other versions.
         video_name = os.path.splitext(os.path.basename(video_path))[0]
-        pp_output = os.path.join(pp_tmp, video_name, "inpaint_out.mp4")
+        results = [os.path.join(pp_tmp, name)
+                   for name in (os.path.basename(frames_dir), video_name)]
         destination = os.path.join(output_dir, "inpaint_out.mp4")
-        if os.path.isfile(pp_output):
+        frames = next((os.path.join(root, "frames") for root in results
+                       if os.path.isdir(os.path.join(root, "frames"))), None)
+        pp_output = next((os.path.join(root, "inpaint_out.mp4") for root in results
+                          if os.path.isfile(os.path.join(root, "inpaint_out.mp4"))), None)
+        if frames is not None:
+            frames_to_video(frames, destination, fps)
+        elif pp_output is not None:
+            if abs(fps - round(fps)) > 1e-3:
+                print(f"Warning: ProPainter saved no frames; its video runs at "
+                      f"{max(1, round(fps))} fps instead of {fps:.3f}.")
             shutil.copy2(pp_output, destination)
         else:
-            frames = os.path.join(pp_tmp, video_name, "frames")
-            if not os.path.isdir(frames):
-                print("ERROR: ProPainter output not found", file=sys.stderr)
-                return 1
-            frames_to_video(frames, destination, fps)
+            print("ERROR: ProPainter output not found", file=sys.stderr)
+            return 1
         print(f"Output: {destination}")
         return 0
     finally:
