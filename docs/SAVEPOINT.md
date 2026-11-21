@@ -39,11 +39,12 @@ off the output is byte-identical to upstream's, measured).
 | `perf/blend-box` | `4133f14` | **Stacked on `perf/instrumentation`.** Compositing only inside the mask's box |
 | `perf/skip-windows` | `8c451f7` | **Stacked on `perf/blend-box`.** Model windows that cannot reach an emitted pixel are skipped; partial prediction-cache entries; `scripts/skip_windows_estimate.py` |
 | `perf/recovery-reuse` | `fa4503c` | **Stacked on `perf/detector-calls`.** Per-run memo for repeated contrast-recovery calls; `scripts/recovery_reuse_probe.py` |
-| `fix/output-fidelity` | `291da43` | Q-1: source timestamps kept for variable-rate video (`timing.py`, `VIDEOWIPE_SOURCE_TIMING`, `docs/source-timing.md`). Q-2: audio copied, metadata and text subtitles kept (`tracks.py`, `fidelity.py`, `VIDEOWIPE_OUTPUT_TRACKS`, `docs/output-tracks.md`). Q-4: warning for sources above 8 bits or HDR (`source_checks.py`). Q-10: ProPainter adapter encodes at the real frame rate |
+| `fix/output-fidelity` | `1457ea9` | Q-1: source timestamps kept for variable-rate video (`timing.py`, `VIDEOWIPE_SOURCE_TIMING`, `docs/source-timing.md`). Q-2: audio copied, metadata and text subtitles kept (`tracks.py`, `fidelity.py`, `VIDEOWIPE_OUTPUT_TRACKS`, `docs/output-tracks.md`). Q-4: warning for sources above 8 bits or HDR (`source_checks.py`). Q-10: ProPainter adapter encodes at the real frame rate |
 | `fix/ocr-crop` | `faf4746` | Q-5: OCR reads each box's own frame, not the first sampled frame (`detect.py`) |
-| `fix/colour-tags` | `0b98964` | **Stacked on `fix/output-fidelity`.** Q-3: output carries the source's colour tags with a matching conversion (`colour.py`, `VIDEOWIPE_COLOUR`, `scripts/colour_roundtrip.py`, `docs/colour.md`) |
+| `fix/colour-tags` | `b2d15a0` | **Stacked on `fix/output-fidelity`.** Q-3: output carries the source's colour tags with a matching conversion (`colour.py`, `VIDEOWIPE_COLOUR`, `scripts/colour_roundtrip.py`, `docs/colour.md`) |
 | `feat/inpaint-quality` | `14c6d98` | Q-7, Q-8, Q-9: ground-truth harness and results only (`scripts/inpaint_quality_*.py`, `docs/inpaint-quality-experiments.md`); no `src/` change |
 | `feat/duration-sampling` | `4ab23be` | Q-6: sample count grows with duration for balanced and sensitive (`sampling.py`, one call in `planning.prepare`, `VIDEOWIPE_SAMPLE_INTERVAL`, `VIDEOWIPE_SAMPLE_MEMORY_MB`, `docs/sampling.md`) |
+| `fix/vfr-ui-timing` | `99bf956` | **Stacked on `fix/output-fidelity`.** Web UI and server convert seconds and frames through the source's real frame times on variable-rate sources (`server/frame_map.py`; constant-rate sources unchanged; `VIDEOWIPE_SOURCE_TIMING=off` restores today's arithmetic) |
 | `docs/performance-prd` | this branch | The PRD and this file |
 | `main` | `a708c67` | Upstream plus the Switchyard MCP setup only; no feature branch is merged into it |
 | `chore/switchyard-mcp` | `f1d326d` | Merged to `main`; can be deleted |
@@ -178,6 +179,23 @@ all but 1 of 198 with fewer detector calls. The three bundled samples are
 unchanged. **Evidence is synthetic only**; a real long clip run on the Mac
 would be worth having, and the owner has not yet chosen between the 1 s
 default and 2 s (cheaper on long videos with no text).
+
+**ffmpeg 9 (the reference Mac has 9.0.2).** The Mac checks found two
+behaviour changes from 6.1.1, both now handled. (1) `-enc_time_base -1` is
+refused and `-vsync` is gone: the timing self-test now tries `demux` first
+(`fix/output-fidelity` `1457ea9`; Mac: 117 passed, 2 skipped). (2) Colour
+options on the output convert the pixels instead of only labelling the file,
+and only tags carried on the frames are written: the colour code now labels
+frames with `setparams` (`fix/colour-tags` `b2d15a0`; byte-identical on
+6.1.1, awaiting the Mac re-run). Also found: copied audio loses the source's
+end trim (up to one audio frame at the very end, on 6.1.1 too); documented
+in `docs/output-tracks.md`. This container cannot fetch an ffmpeg 9 build,
+so ffmpeg 9 is verified only on the Mac.
+
+**`fix/vfr-ui-timing`** (stacked on `fix/output-fidelity`): on `chinese1.mp4`
+the page and server's seconds-times-fps put 294 of 591 frames one frame out
+and 516 of 591 three-second trials on a different range; they now use the
+source's frame times. The other two samples are exact and unchanged.
 
 **Phase 3 is complete.** Not started, and not in Phase 3: the long-term
 half of Q-4, the web UI items (U-1 to U-4), P2-5 and P2-7, the
