@@ -286,6 +286,19 @@ def test_frames_are_read_once_while_crops_fit_in_the_budget(tmp_path, monkeypatc
     assert len(reads) == 1
 
 
+def test_crops_missing_for_several_regions_are_read_in_one_pass(tmp_path, monkeypatch):
+    reads = []
+    original = _iter_sample_frames_with_indices
+    monkeypatch.setattr(
+        "videowipe.detect._iter_sample_frames_with_indices",
+        lambda *args, **kwargs: reads.append(1) or original(*args, **kwargs),
+    )
+    _, recogniser, _ = _run_two_rows(tmp_path, monkeypatch, "0")
+
+    assert len(recogniser.crops) == 6  # both rows read
+    assert len(reads) == 2  # sampling, then one pass for both rows
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [

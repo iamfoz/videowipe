@@ -759,6 +759,23 @@ def _refetch_ocr_crops(
         frames.close()
 
 
+def _region_ocr_boxes(region, all_frame_boxes, w: int, h: int) -> list[tuple[int, TextBox]]:
+    """The ``(sample_index, box)`` pairs whose crops the region loop will read: the
+    first :data:`_OCR_CROPS_PER_REGION` non-empty text-less boxes overlapping
+    *region*, and none when any overlapping box already has text."""
+    picks: list[tuple[int, TextBox]] = []
+    for sample_index, boxes in all_frame_boxes:
+        for box in boxes:
+            if not _box_overlaps_bbox(box, region, w, h):
+                continue
+            if box.text:
+                return []
+            bx1, by1, bx2, by2 = _bbox(box.points, w, h)
+            if len(picks) < _OCR_CROPS_PER_REGION and bx1 <= bx2 and by1 <= by2:
+                picks.append((sample_index, box))
+    return picks
+
+
 def _zone(bbox: tuple[int, int, int, int], w: int, h: int) -> str:
     x1, y1, x2, y2 = bbox
     cx = (x1 + x2) / 2
@@ -1453,6 +1470,16 @@ def detect_clean_candidates(
 
         raw_regions.sort(key=lambda b: (b[2], b[1]))
 
+        if recognizer is not None:
+            # Crops that were not kept are read again in one pass for every
+            # region, not one pass per region.
+            _refetch_ocr_crops(
+                video_path, sample_count,
+                [pick for region in raw_regions
+                 for pick in _region_ocr_boxes(region[1:], all_frame_boxes, w, h)],
+                box_crops, w, h, check_cancelled,
+            )
+
         for label_id, x1, y1, x2, y2 in raw_regions:
             text_samples: list[str] = []
             ocr_boxes: list[tuple[int, TextBox]] = []
@@ -1475,10 +1502,6 @@ def detect_clean_candidates(
                     presence_frames.append(sample_index)
 
             if not text_samples and ocr_boxes and recognizer is not None:
-                _refetch_ocr_crops(
-                    video_path, sample_count, ocr_boxes, box_crops, w, h,
-                    check_cancelled,
-                )
                 for _, box in ocr_boxes:
                     crop = box_crops.get(id(box))
                     if crop is None:
