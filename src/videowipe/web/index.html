@@ -356,6 +356,11 @@
     }
     function storageGet(key) { try { return sessionStorage.getItem(key); } catch { return null; } }
     function storageSet(key, value) { try { if(value===null)sessionStorage.removeItem(key); else sessionStorage.setItem(key,value); } catch {} }
+    // renderActions and renderTimeline are the only writers of the text of the elements they set through put(), so remember the last
+    // value written and skip a repeat. A same-value write still re-lays-out and repaints (the ruler's bars with it), and a
+    // comparison with the element's own text would never match once the translation overlay has rewritten it.
+    const putText=new Map();
+    function put(id, text) { if(putText.get(id)!==text){putText.set(id,text);$(id).textContent=text;} }
     function notify(text, tone="info") { $("message").textContent=text; $("message").dataset.tone=tone; $("message").hidden=!text; }
     function showWarnings(warnings=[]) { if(warnings.length)notify("需留意："+warnings.join("；")); }
     function reviewRequest() {
@@ -452,9 +457,27 @@
       for(const track of selectedTracks())for(const [a,b] of track.segments){const span=document.createElement("span");span.className="presence";span.style.left=share(a)+"%";span.style.width=(source.frame_times?share(b)-share(a):(b-a)/source.frame_count*100)+"%";$("presenceTrack").append(span);}
       const start=Number($("start").value),end=Math.min(duration(),start+Number($("duration").value));
       $("trialWindow").hidden=!reviewLoaded||!validRange();$("trialWindow").style.left=start/duration()*100+"%";$("trialWindow").style.width=(end-start)/duration()*100+"%";
-      $("windowLabel").textContent=reviewLoaded&&validRange()?`试擦 ${fmt(start,true)}–${fmt(end,true)}`:"";
-      $("rangeLabel").textContent=reviewLoaded?"绿色为目标出现时间 · 橙色为试擦范围":"拖动时间轴查看原片";
+      put("windowLabel",reviewLoaded&&validRange()?`试擦 ${fmt(start,true)}–${fmt(end,true)}`:"");
+      put("rangeLabel",reviewLoaded?"绿色为目标出现时间 · 橙色为试擦范围":"拖动时间轴查看原片");
     }
+    // The presence bars depend only on the source and the selected segments, but renderTimeline runs on every input, drag and
+    // progress message, and rebuilding hundreds of bars costs a re-layout and repaint each time. Between changes only the trial
+    // window and the labels are redrawn, with the same statements as the end of renderTimeline. (A wrapper, so that
+    // renderTimeline itself stays as other branches edit it.)
+    let presenceKey=null;
+    const renderTimelineWithBars=renderTimeline;
+    function renderTrialWindow() {
+      const start=Number($("start").value),end=Math.min(duration(),start+Number($("duration").value));
+      $("trialWindow").hidden=!reviewLoaded||!validRange();$("trialWindow").style.left=start/duration()*100+"%";$("trialWindow").style.width=(end-start)/duration()*100+"%";
+      put("windowLabel",reviewLoaded&&validRange()?`试擦 ${fmt(start,true)}–${fmt(end,true)}`:"");
+      put("rangeLabel",reviewLoaded?"绿色为目标出现时间 · 橙色为试擦范围":"拖动时间轴查看原片");
+    }
+    renderTimeline=function() {
+      if(!source){presenceKey=null;putText.delete("windowLabel");putText.delete("rangeLabel");return renderTimelineWithBars();}
+      const key=[source,source.frame_count];for(const t of selectedTracks()){key.push(t.segments.length);for(const [a,b] of t.segments)key.push(a,b);}
+      if(presenceKey&&key.length===presenceKey.length&&key.every((value,i)=>value===presenceKey[i]))return renderTrialWindow();
+      presenceKey=key;renderTimelineWithBars();
+    };
     function renderActions() {
       const isBusy=busy(), trialReady=trial?.ready&&signature(trial.request)===signature(reviewRequest());
       $("intro").hidden=Boolean(selectedFile||currentJobId);$("workspace").hidden=$("projectline").hidden=!selectedFile&&!currentJobId;
@@ -469,12 +492,12 @@
       for(const button of document.querySelectorAll('[data-view]'))button.setAttribute("aria-pressed",String(button.dataset.view===view));
       $("play").disabled=(isBusy&&state!=="pending")||seeking||(view==="source"&&!sourceSupported);$("seek").disabled=seeking||(view==="source"&&!sourceSupported);
       const labels={ready:["等待检测","先确认要清理的内容","可以先播放视频，再开始检测。","检测目标 →"],uploading:["正在复制视频","正在复制视频","文件保存在本机。","正在复制…"],pending:["正在检测","正在寻找清理目标","检测结束后可先试擦一小段。","正在检测…"],preview_ready:trialReady?["试擦已就绪","这段效果满意吗？","仅代表所选片段，可以调整目标后重新试擦。","满意，处理全片 →"]:["可以试擦","先看一小段，再决定",validRange()?"已推荐包含目标的片段，也可以手动调整时间。":selectedIds.length?"所选时间没有有效目标，请使用推荐片段。":"尚未选择清理目标。",`先看这 ${Math.min(duration()||3,Number($("duration").value))} 秒效果 →`],trial_running:["正在试擦","正在修复所选片段","全片处理等待你确认。","正在试擦…"],running:["正在处理","正在清理全片","完成后可在这里播放、检查和下载。","正在处理…"],done:["处理完成","检查成片，必要时再修改","按下方建议复查，也可修改时间或保护区后重新试擦。",trialReady?"按当前修改重新导出 →":"先试擦当前修改 →"],error:["处理停止","本次处理未完成","原视频保留，可换片重新开始。","处理停止"],cancelled:["已取消","任务已取消","可点击重试重新检测，或换一个视频。","已取消"]};
-      const text=labels[state]||labels.ready;$("status").textContent=text[0];$("busyTitle").textContent=text[0];$("actionTitle").textContent=text[1];$("actionHint").textContent=text[2];$("primary").textContent=text[3];
-      if(state==="pending"&&reviewLoaded){$("status").textContent="目标可审阅";$("busyTitle").textContent="正在确认出现时间";$("primary").textContent="确认时间后试擦";$("actionTitle").textContent="可以先选目标";$("actionHint").textContent="正在确认出现时间，完成后即可试擦。";}
-      if(state==="cancelling"){$("status").textContent="正在取消";$("busyTitle").textContent="正在取消";$("actionTitle").textContent="正在安全结束处理";$("primary").textContent="正在取消…";$("actionHint").textContent="等待当前分段安全结束。";}
-      if(state==="interrupted"){$("status").textContent="处理已中断";$("actionTitle").textContent="可以从这里重试";$("primary").textContent="请点击重试";$("actionHint").textContent="已保存的决定和成功视频保留，可点击重试。";}
-      if(!maskHasRemoval&&reviewLoaded)$("actionHint").textContent="没有需要处理的区域，请调整选择或保护范围。";
-      if(currentJobId)$("download").href=`/jobs/${currentJobId}/download`;$("download").textContent=resultReviewRevision===reviewRevision?"下载成片":"下载上次成片";
+      const text=labels[state]||labels.ready;put("status",text[0]);put("busyTitle",text[0]);put("actionTitle",text[1]);put("actionHint",text[2]);put("primary",text[3]);
+      if(state==="pending"&&reviewLoaded){put("status","目标可审阅");put("busyTitle","正在确认出现时间");put("primary","确认时间后试擦");put("actionTitle","可以先选目标");put("actionHint","正在确认出现时间，完成后即可试擦。");}
+      if(state==="cancelling"){put("status","正在取消");put("busyTitle","正在取消");put("actionTitle","正在安全结束处理");put("primary","正在取消…");put("actionHint","等待当前分段安全结束。");}
+      if(state==="interrupted"){put("status","处理已中断");put("actionTitle","可以从这里重试");put("primary","请点击重试");put("actionHint","已保存的决定和成功视频保留，可点击重试。");}
+      if(!maskHasRemoval&&reviewLoaded)put("actionHint","没有需要处理的区域，请调整选择或保护范围。");
+      if(currentJobId)$("download").href=`/jobs/${currentJobId}/download`;put("download",resultReviewRevision===reviewRevision?"下载成片":"下载上次成片");
     }
     function renderTargets() {
       $("targetList").replaceChildren();$("targetCount").textContent=reviewLoaded?`${selectedIds.length} / ${tracks.length} 项待清理`:"等待检测";
@@ -632,7 +655,7 @@
       state=data.state;resultRevision=data.result_revision||null;resultReviewRevision=data.result_review_revision??null;$("resultReview").hidden=state!=="done";finalPlanReady=Boolean(data.final_plan_ready);
       if(["preview_ready","done","error","cancelled","interrupted"].includes(state))closeStream();
       if(data.review_ready&&(!reviewLoaded||(!wasFinal&&finalPlanReady))&&!previewLoading){previewLoading=true;try{await loadPreview(data.id);}finally{previewLoading=false;}}
-      $("filename").textContent=data.original_filename||$("filename").textContent;renderActions();
+      {const name=data.original_filename||$("filename").textContent;if($("filename").textContent!==name)$("filename").textContent=name;}renderActions();
       const phaseNames={upload:"复制视频",plan:"准备检测",prepare:"准备处理",detect:"检测目标",refine:"确认出现时间",persist:"保存计划",inpaint:"修复画面",predict:"计算或复用预测",compose:"从原片重新合成",encode:"编码视频",complete:"已完成",trial:"准备试擦",preview:"等待审阅"};
       const counts=data.phase_counts||{},num=n=>Number(n).toLocaleString(),lines=[phaseNames[data.phase]||"正在处理"];if(data.progress>0)lines.push(`当前阶段 ${Math.round(data.progress*100)}%`);
       // Estimates arrive only on some updates: keep the job's last one so the lines below do not hop.
