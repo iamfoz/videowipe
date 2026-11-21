@@ -1108,6 +1108,10 @@ def playback(job_id: str, body: PlaybackRequest):
     return {"ok": True}
 
 
+SSE_POLL_SECONDS = 0.5
+SSE_HEARTBEAT_SECONDS = 15.0
+
+
 @app.get("/jobs/{job_id}/progress")
 def progress_sse(job_id: str):
     job = get_job(job_id)
@@ -1115,12 +1119,24 @@ def progress_sse(job_id: str):
         raise HTTPException(status_code=404, detail="job not found")
 
     def _events():
+        # Send a snapshot only when it differs from the last one sent; between changes send an SSE comment now
+        # and then so that the connection and any proxy in front of it stay alive. Comments are not events, so
+        # the page never sees them.
+        last = None
+        quiet_since = time.monotonic()
         while True:
             snapshot = job.snapshot()
-            yield f"data: {json.dumps(snapshot)}\n\n"
+            payload = json.dumps(snapshot)
+            if payload != last:
+                last = payload
+                quiet_since = time.monotonic()
+                yield f"data: {payload}\n\n"
+            elif time.monotonic() - quiet_since >= SSE_HEARTBEAT_SECONDS:
+                quiet_since = time.monotonic()
+                yield ": keep-alive\n\n"
             if snapshot["state"] in {"done", "error", "cancelled", "preview_ready", "interrupted"}:
                 break
-            time.sleep(0.5)
+            time.sleep(SSE_POLL_SECONDS)
 
     return StreamingResponse(_events(), media_type="text/event-stream")
 
