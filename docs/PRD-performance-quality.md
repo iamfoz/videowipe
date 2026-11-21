@@ -681,7 +681,9 @@ One branch per group, each from upstream, each independently mergeable (C5).
 | 10 | `perf/skip-windows`, `perf/recovery-reuse` | P2-2, recovery reuse (done) | equality tests |
 | 11 | `fix/colour-tags` (stacked on `fix/output-fidelity`) | Q-3 (done) | colour round trip |
 | 12 | `feat/inpaint-quality` | Q-7…Q-9 (measured, nothing built) | ground-truth harness |
-| 13 | later | P2-5, P2-7, U-1…U-4 | as stated |
+| 13 | `perf/web-ui`, `perf/i18n-memo` (on `feat/i18n-english`) | U-1…U-3, U-4 (done) | DOM and pixel equality |
+| 14 | `fix/vfr-ui-timing` (on `fix/output-fidelity`), `fix/ocr-crop-budget` (on `fix/ocr-crop`) | follow-ups found in Phase 3 (done) | oracle tests |
+| 15 | later | P2-5, P2-7 | as stated |
 
 Steps 2–4 are safe to start immediately after step 1; nothing in them changes
 results. Steps 5, 6 and 9 must not be merged without their gate numbers.

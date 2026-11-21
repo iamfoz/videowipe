@@ -16,7 +16,7 @@ servers updated to 1.24.0).
 Every branch starts from upstream `20872d4` unless marked as stacked. Any
 combination merges without conflicts (66 of 66 pairs checked earlier; the
 three newest branches checked against every other), and with all of them
-merged the suite passes (1,400 tests, nineteen branches) and an end-to-end clean of a
+merged the suite passes (1,413 tests, twenty-one branches) and an end-to-end clean of a
 constant-rate clip is byte-identical to upstream's output. With
 `fix/output-fidelity` merged, a variable-rate source (the full
 `chinese1.mp4` is one) is deliberately no longer identical: its frames keep
@@ -46,6 +46,8 @@ off the output is byte-identical to upstream's, measured).
 | `feat/duration-sampling` | `4ab23be` | Q-6: sample count grows with duration for balanced and sensitive (`sampling.py`, one call in `planning.prepare`, `VIDEOWIPE_SAMPLE_INTERVAL`, `VIDEOWIPE_SAMPLE_MEMORY_MB`, `docs/sampling.md`) |
 | `fix/vfr-ui-timing` | `99bf956` | **Stacked on `fix/output-fidelity`.** Web UI and server convert seconds and frames through the source's real frame times on variable-rate sources (`server/frame_map.py`; constant-rate sources unchanged; `VIDEOWIPE_SOURCE_TIMING=off` restores today's arithmetic) |
 | `fix/ocr-crop-budget` | `ec364c2` | **Stacked on `fix/ocr-crop`.** OCR crops kept while sampling are capped (`VIDEOWIPE_OCR_CROP_BUDGET_MB`, default 64); crops needed after the cap are re-read from their own frames in one pass. Recognised text, candidates and baselines identical with real RapidOCR on all three samples |
+| `perf/web-ui` | `8ed77d3` | U-1 to U-3: timeline bars rebuilt only when segments change (a wrapper, so `renderTimeline` stays as other branches edit it); mask tint by canvas filter with a self-check and the old loop as fallback; progress stream sends only changes plus a 15 s keep-alive (`docs/web-ui-performance.md`) |
+| `perf/i18n-memo` | `ce45057` | **Stacked on `feat/i18n-english`.** U-4: translation patterns compiled once, results memoised (capped) |
 | `docs/performance-prd` | this branch | The PRD and this file |
 | `main` | `a708c67` | Upstream plus the Switchyard MCP setup only; no feature branch is merged into it |
 | `chore/switchyard-mcp` | `f1d326d` | Merged to `main`; can be deleted |
@@ -204,6 +206,16 @@ per text-less region are ever read, but every crop was kept. Now at most
 RSS 435 to 263 MB); anything needed beyond that is re-read from its own
 frame in a single extra pass. Identical output with real RapidOCR on all
 three samples at the default and at a zero budget.
+
+**Web UI (U-1 to U-4), done.** Measured in headless Chromium with a
+135,000-frame 1080p job: an unchanged timeline redraw 59.9 to 0.7 ms (5,001
+segments); mask overlay 27 to 7 ms of main thread; an idle job's progress
+stream 120 messages (224 KB) a minute to 1 message plus 3 keep-alives
+(1.9 KB); translation of a repeated pattern 40 to 0.3 us. Page DOM identical
+to upstream's in 34 recorded steps (re-checked after the wrapper rework).
+Not done: the canvas timeline (measured; would change the picture), the
+`busyHint` writes (they would conflict with `fix/progress-display`), Firefox
+and Safari, GPU rasterisation.
 
 **Phase 3 is complete.** Not started, and not in Phase 3: the long-term
 half of Q-4, the web UI items (U-1 to U-4), P2-5 and P2-7, the
