@@ -93,6 +93,40 @@
     return left + right;
   }
 
+  // The pattern list and its compiled regular expressions depend only on the
+  // catalogue, so build them once per catalogue object (catalogues are loaded
+  // once and never modified) instead of on every call, and remember the
+  // results already worked out for it. Both are pure functions of the
+  // catalogue, so the output is exactly what the uncached algorithm gives.
+  var compiledFor = new WeakMap();
+  var NO_PATTERNS = [];
+  var MEMO_LIMIT = 2000; // dynamic strings (counters, times) rarely repeat: keep the memo bounded
+  function compile(messages) {
+    var compiled = compiledFor.get(messages);
+    if (compiled) return compiled;
+    var patterns = [];
+    for (var key in messages) {
+      if (!messages[key] || !isPatternKey(key) || isAmbiguous(key)) continue;
+      var built = buildPattern(key);
+      patterns.push({ literal: literalLength(key), key: key, value: messages[key], regex: built.regex,
+        numberToGroup: built.numberToGroup,
+        // Fragment-pass candidate for bounded patterns: the same expression, unanchored and global.
+        fragment: isBounded(key)
+          ? { key: key, value: messages[key], re: new RegExp(built.regex.source.slice(1, -1), "g"), numberToGroup: built.numberToGroup }
+          : null });
+    }
+    // Stable sort, descending literal length (insertion order breaks ties, as in Python).
+    patterns.sort(function (a, b) { return b.literal - a.literal; });
+    var plain = [];
+    for (var fkey in messages) {
+      if (!messages[fkey] || isPatternKey(fkey)) continue;
+      plain.push({ key: fkey, value: messages[fkey], re: null });
+    }
+    compiled = { patterns: patterns, plain: plain, memo: new Map() };
+    compiledFor.set(messages, compiled);
+    return compiled;
+  }
+
   function translateCore(text, messages, depth) {
     depth = depth || 0;
     if (!hasCJK(text)) return text;
@@ -100,36 +134,36 @@
     // 3. Exact match.
     if (Object.prototype.hasOwnProperty.call(messages, text) && messages[text]) return messages[text];
 
-    var patterns = [];
-    if (depth < MAX_DEPTH) {
-      for (var key in messages) {
-        if (!messages[key] || !isPatternKey(key) || isAmbiguous(key)) continue;
-        patterns.push({ literal: literalLength(key), key: key, value: messages[key] });
-      }
-      // Stable sort, descending literal length (insertion order breaks ties, as in Python).
-      patterns.sort(function (a, b) { return b.literal - a.literal; });
+    var compiled = compile(messages);
+    if (depth === 0) {
+      var known = compiled.memo.get(text);
+      if (known !== undefined) return known;
     }
+    var result = translateRest(text, messages, depth, compiled);
+    if (depth === 0) {
+      if (compiled.memo.size >= MEMO_LIMIT) compiled.memo.clear();
+      compiled.memo.set(text, result);
+    }
+    return result;
+  }
+
+  function translateRest(text, messages, depth, compiled) {
+    var patterns = depth < MAX_DEPTH ? compiled.patterns : NO_PATTERNS;
 
     // 4. Pattern match (anchored), descending literal length.
     for (var i = 0; i < patterns.length; i++) {
-      var built = buildPattern(patterns[i].key);
-      var match = built.regex.exec(text);
-      if (match) return applyValue(patterns[i].value, match, built.numberToGroup, messages, depth);
+      var match = patterns[i].regex.exec(text);
+      if (match) return applyValue(patterns[i].value, match, patterns[i].numberToGroup, messages, depth);
     }
 
     // 5. Fragment fallback: plain keys as substrings plus bounded patterns
     //    searched unanchored; earliest match wins, then the longest.
     var candidates = [];
-    for (var fkey in messages) {
-      if (!messages[fkey] || isPatternKey(fkey)) continue;
-      if (text.indexOf(fkey) !== -1) candidates.push({ key: fkey, value: messages[fkey], re: null });
+    for (var f = 0; f < compiled.plain.length; f++) {
+      if (text.indexOf(compiled.plain[f].key) !== -1) candidates.push(compiled.plain[f]);
     }
     for (var p = 0; p < patterns.length; p++) {
-      if (!isBounded(patterns[p].key)) continue;
-      var b = buildPattern(patterns[p].key);
-      var src = b.regex.source;
-      candidates.push({ key: patterns[p].key, value: patterns[p].value,
-        re: new RegExp(src.slice(1, -1), "g"), numberToGroup: b.numberToGroup });
+      if (patterns[p].fragment) candidates.push(patterns[p].fragment);
     }
     if (!candidates.length) return text;
 
@@ -160,9 +194,10 @@
     return join(out, translateCore(text.slice(start), messages, depth));
   }
 
+  var NO_MESSAGES = {};
   function messagesFor(code) {
     var cat = catalogues[code];
-    return (cat && cat.messages) || {};
+    return (cat && cat.messages) || NO_MESSAGES;
   }
 
   // translateWith: preserve surrounding whitespace and translate the trimmed
