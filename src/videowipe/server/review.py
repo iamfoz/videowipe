@@ -9,12 +9,13 @@ from videowipe.errors import InvalidInputError
 from videowipe.plan import Segment, Track, validate_plan
 
 
-def seconds_to_frames(start, end, source):
+def seconds_to_frames(start, end, source, clock=None):
+    """Frame interval for a time interval; *clock* (a ``FrameMap``) stands in for the constant rate."""
     if not all(type(v) in (int, float) and math.isfinite(v) for v in (start, end)):
         raise InvalidInputError("time must be finite")
-    if not 0 <= start < end <= source.frame_count / source.fps:
+    if not 0 <= start < end <= (clock.duration if clock else source.frame_count / source.fps):
         raise InvalidInputError("time interval exceeds the video")
-    frames = [value * source.fps for value in (start, end)]
+    frames = [clock.frames(value) if clock else value * source.fps for value in (start, end)]
     frames = [round(value) if abs(value-round(value)) < 1e-9 else value for value in frames]
     return math.floor(frames[0]), min(source.frame_count, math.ceil(frames[1]))
 

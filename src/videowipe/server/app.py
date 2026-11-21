@@ -38,6 +38,7 @@ from videowipe.plan import (
     execution_masks,
 )
 from videowipe.server.review import compile_review, seconds_to_frames, review_windows
+from videowipe.server.frame_map import frame_map, trial_seconds
 from videowipe.server.jobs import (
     Job,
     JobBusy,
@@ -221,12 +222,21 @@ def _job_file(job: Job, path: str | Path) -> Path:
     return resolved
 
 
-def _trial_range(plan, start: float, duration: float) -> tuple[int, int]:
+def _source_frames(job, plan):
+    """The source's real frame times when it is variable-rate, else ``None`` (constant rate)."""
+    try:
+        return frame_map(job.video_path, plan.source.frame_count, plan.source.fps)
+    except Exception:  # a failed probe leaves upstream's constant-rate arithmetic
+        return None
+
+
+def _trial_range(plan, start: float, duration: float, frames=None) -> tuple[int, int]:
     fps = plan.source.fps
-    if start >= plan.source.frame_count / fps:
+    total = frames.duration if frames else plan.source.frame_count / fps
+    if start >= total:
         raise HTTPException(status_code=400, detail="trial starts outside the video")
     try:
-        first, last = seconds_to_frames(start, min(start + duration, plan.source.frame_count / fps), plan.source)
+        first, last = seconds_to_frames(start, min(start + duration, total), plan.source, frames)
     except InvalidInputError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not 0 <= first < last <= plan.source.frame_count:
@@ -240,7 +250,7 @@ def _trial_range(plan, start: float, duration: float) -> tuple[int, int]:
     return first, last
 
 
-def _recommended_trial(plan) -> dict | None:
+def _recommended_trial(plan, frames=None) -> dict | None:
     intervals = sorted(
         (s.start, s.end) for track in plan.remove_tracks
         if track.mask is not None and track.mask.any() for s in track.segments
@@ -255,10 +265,11 @@ def _recommended_trial(plan) -> dict | None:
         return None
     first, last = min(merged, key=lambda row: (-(row[1] - row[0]), row[0]))
     fps = plan.source.fps
-    duration = min(3.0, plan.source.frame_count / fps)
-    start = max(0.0, min(plan.source.frame_count / fps - duration,
-                         (first + last) / (2 * fps) - duration / 2))
-    frame_range = _trial_range(plan, start, duration)
+    total = frames.duration if frames else plan.source.frame_count / fps
+    duration = min(3.0, total)
+    middle = (frames.seconds(first) + frames.seconds(last)) / 2 if frames else (first + last) / (2 * fps)
+    start = max(0.0, min(total - duration, middle - duration / 2))
+    frame_range = _trial_range(plan, start, duration, frames)
     return {"start_seconds": start, "duration_seconds": duration,
             "frame_range": list(frame_range)}
 
@@ -626,6 +637,7 @@ def preview(job_id: str):
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     plan = load_wipe_plan(str(_plan_path(job)))
+    frames = _source_frames(job, plan)
     by_id = {candidate["id"]: candidate for candidate in candidates}
     tracks = []
     for track in plan.tracks:
@@ -642,10 +654,10 @@ def preview(job_id: str):
         "state": snapshot["state"],
         "candidates": candidates,
         "tracks": tracks,
-        "source": plan.source.to_dict(),
+        "source": dict(plan.source.to_dict(), **({"frame_times": frames.to_list()} if frames else {})),
         "original_filename": snapshot["original_filename"],
         "source_url": f"/jobs/{job.id}/source-video",
-        "recommended_trial": _recommended_trial(plan),
+        "recommended_trial": _recommended_trial(plan, frames),
         "confirmed_review": snapshot["confirmed_review"],
         "trial": snapshot["trial"],
         "preview_url": f"/jobs/{job.id}/preview-image",
@@ -898,8 +910,8 @@ def _run_trial(job: Job, plan, frame_range: tuple[int, int], trial_dir: Path) ->
     started = time.perf_counter()
     try:
         plan = _prepare_execution(job, plan, trial_dir)
-        _trial_range(plan, frame_range[0] / plan.source.fps,
-                     (frame_range[1] - frame_range[0]) / plan.source.fps)
+        frames = _source_frames(job, plan)
+        _trial_range(plan, *trial_seconds(frame_range, plan.source.fps, frames), frames)
         _update_progress(job, ProgressEvent("prepare", 0, 1))
         identity = _get_engine()._trial_identity()
         job.token.raise_if_cancelled()
@@ -1036,16 +1048,17 @@ def trial(job_id: str, body: TrialRequest):
         if job.state not in {"preview_ready", "done"}:
             raise HTTPException(status_code=409, detail=f"job is {job.state}")
         plan, _selected_ids = _save_review(job, body)
-        fps = plan.source.fps
-        first, last = _trial_range(plan, body.start_seconds, body.duration_seconds)
+        frames = _source_frames(job, plan)
+        first, last = _trial_range(plan, body.start_seconds, body.duration_seconds, frames)
+        start_seconds, duration_seconds = trial_seconds((first, last), plan.source.fps, frames)
         with _worker_start(job):
             _reserve_execution(job, body.model_copy(update={"expected_revision": job.review_revision}), "trial")
             trial_id = uuid.uuid4().hex
             trial_dir = _job_path(job, Path(job.output_dir) / "trials" / trial_id)
             job.trial = {
                 "id": trial_id, "ready": False, "request": body.model_dump(),
-                "frame_range": [first, last], "start_seconds": first / fps,
-                "duration_seconds": (last - first) / fps,
+                "frame_range": [first, last], "start_seconds": start_seconds,
+                "duration_seconds": duration_seconds,
                 "review_revision": job.review_revision,
             }
             job.trial_request = {"start_seconds": body.start_seconds, "duration_seconds": body.duration_seconds}
