@@ -31,6 +31,7 @@ else in the pipeline (see :mod:`videowipe.video`).
 from __future__ import annotations
 
 import functools
+import itertools
 import json
 import os
 import struct
@@ -318,21 +319,23 @@ def _self_test_stream(offset: bool):
 def ffmpeg_timing_options(offset: bool = False) -> tuple | None:
     """The ffmpeg output options that keep each frame's timestamp: no retiming
     (``-fps_mode passthrough``, or ``-vsync passthrough`` on builds that lack
-    it) and an encoder time base taken from the input (``-enc_time_base -1``;
-    without it ffmpeg rounds every frame to a grid of 1 / frame rate). ``None``
+    it) and an encoder time base taken from the input (``-enc_time_base demux``,
+    or ``-1`` on builds older than that spelling; ffmpeg 9 accepts only
+    ``demux``; without it ffmpeg rounds every frame to a grid of 1 / frame
+    rate). ``None``
     unless they have been shown to keep the timestamps of a small off-grid
     Matroska stream on this machine (``offset``: one that starts late).
 
     This is a capability check, not a version check: it runs ffmpeg."""
     data, expected = _self_test_stream(offset)
-    for option in ("-fps_mode", "-vsync"):
+    for option, time_base in itertools.product(("-fps_mode", "-vsync"), ("demux", "-1")):
         with tempfile.TemporaryDirectory() as tmp:
             target = os.path.join(tmp, "probe.mp4")
             cmd = ["ffmpeg", "-y", "-loglevel", "error", "-nostats"]
             if offset:
                 cmd += ["-itsoffset", "0.083"]
             cmd += ["-f", "matroska", "-i", "-", option, "passthrough",
-                    "-enc_time_base", "-1",
+                    "-enc_time_base", time_base,
                     "-video_track_timescale", "1000", "-c:v", "libx264",
                     "-preset", "ultrafast", "-pix_fmt", "yuv420p", target]
             try:
@@ -351,7 +354,7 @@ def ffmpeg_timing_options(offset: bool = False) -> tuple | None:
             except ValueError:
                 continue
             if got == expected:
-                return (option, "passthrough", "-enc_time_base", "-1")
+                return (option, "passthrough", "-enc_time_base", time_base)
     return None
 
 

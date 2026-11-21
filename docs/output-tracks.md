@@ -95,6 +95,11 @@ subtitle tracks written beside it.
 * Copied audio keeps the source's timing exactly (including encoder delay and a video
   that starts after its audio), but a source whose audio and video start at different
   times is still shifted as a whole to start at zero, as ffmpeg always does.
+* The source's end trim is not carried when audio is copied: ffmpeg drops it, so the
+  copied track can run up to one audio frame longer at the very end (measured: an
+  AC-3 track of 1.994 s became 2.010 s; 32 ms is the most for AC-3). The start, the
+  sync and every packet's bytes are unchanged. AAC in MP4 was not affected in the
+  tests.
 * Dispositions: the MP4 muxer marks the first audio track as default whatever the
   source said.
 * Tracks that this ffmpeg cannot copy or convert make the preflight fail and the job

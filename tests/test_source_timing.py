@@ -459,13 +459,29 @@ def refusing(monkeypatch, *options):
         if any(o in cmd for o in options) else real(cmd, *a, **k)))
 
 
+def _ffmpeg_accepts(*options):
+    done = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=s=32x32:r=25:d=0.2",
+                           *options, "-c:v", "libx264", "-f", "null", "-"], capture_output=True)
+    return done.returncode == 0
+
+
 def test_capability_check_uses_whichever_sync_option_this_ffmpeg_accepts(
         monkeypatch, fresh_capability_check):
+    refusing(monkeypatch)  # nothing refused: the newer spellings are preferred
+    assert timing.ffmpeg_timing_options() == ("-fps_mode", "passthrough", "-enc_time_base", "demux")
+    if not _ffmpeg_accepts("-vsync", "passthrough"):
+        pytest.skip("this ffmpeg has no -vsync (removed in newer releases)")
+    timing.ffmpeg_timing_options.cache_clear()
     refusing(monkeypatch, "-fps_mode")
     assert timing.ffmpeg_timing_options()[0] == "-vsync"
-    timing.ffmpeg_timing_options.cache_clear()
-    refusing(monkeypatch)  # nothing refused: the newer spelling is preferred
-    assert timing.ffmpeg_timing_options()[0] == "-fps_mode"
+
+
+def test_capability_check_falls_back_to_the_older_time_base_spelling(
+        monkeypatch, fresh_capability_check):
+    if not _ffmpeg_accepts("-fps_mode", "passthrough", "-enc_time_base", "-1"):
+        pytest.skip("this ffmpeg no longer accepts -enc_time_base -1 (ffmpeg 9 and later)")
+    refusing(monkeypatch, "demux")
+    assert timing.ffmpeg_timing_options() == ("-fps_mode", "passthrough", "-enc_time_base", "-1")
 
 
 def test_without_the_options_the_job_falls_back_with_a_warning(

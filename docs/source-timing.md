@@ -81,8 +81,10 @@ saying so:
   the first time it is needed the module runs ffmpeg on a small off-grid Matroska
   stream and confirms that the output timestamps come out exact, trying
   `-fps_mode` and then `-vsync` for the "do not retime" option, and requiring
-  `-enc_time_base -1` (without it ffmpeg rounds each frame to a grid of
-  1 / frame rate, which hides the problem on sources that sit on such a grid).
+  an encoder time base taken from the input: `-enc_time_base demux`, or `-1` on
+  builds older than that spelling (ffmpeg 9 refuses `-1` and has no `-vsync`).
+  Without it ffmpeg rounds each frame to a grid of 1 / frame rate, which hides
+  the problem on sources that sit on such a grid.
 
 When timestamps are kept, one line says so ("Keeping the source's frame
 timestamps ...").

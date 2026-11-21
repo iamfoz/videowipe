@@ -76,7 +76,11 @@ def test_real_sources_are_classified_and_reported_once(tmp_path, capsys):
     assert warn_about_source(ten) == []  # once per source
     assert capsys.readouterr().out == ""
 
-    hdr = _clip(tmp_path / "hdr.mp4", "-c:v", "libx264", "-pix_fmt", "yuv420p10le",
+    # Tags set on the frames as well: ffmpeg 9 writes only the matrix from the
+    # output options alone.
+    hdr = _clip(tmp_path / "hdr.mp4", "-vf",
+                "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p10le",
                 "-color_primaries", "bt2020", "-color_trc", "smpte2084",
                 "-colorspace", "bt2020nc")
     lines = warn_about_source(hdr)

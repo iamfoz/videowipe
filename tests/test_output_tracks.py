@@ -154,7 +154,9 @@ def audio_hashes(path, index=0):
     out = run(["ffprobe", "-v", "error", "-select_streams", f"a:{index}", "-show_entries",
                "packet=data_hash", "-show_data_hash", "sha256", "-of", "csv=p=0", str(path)],
               text=True).stdout.split()
-    return out
+    # Newer ffprobe adds an empty field (so a trailing comma) for a packet that
+    # carries side data, such as the end trim; only the payload hash matters.
+    return [line.split(",")[0] for line in out]
 
 
 def format_tags(path):
