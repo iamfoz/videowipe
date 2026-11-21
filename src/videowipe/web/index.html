@@ -770,10 +770,32 @@
         if(!$('showMask').checked){$('maskState').textContent='';return;}
         const bitmap=await createImageBitmap(await response.blob());
         if(epoch!==maskEpoch||revision!==reviewRevision||saving){bitmap.close();return;}
-        canvas.width=source.width;canvas.height=source.height;const ctx=canvas.getContext('2d');ctx.drawImage(bitmap,0,0);bitmap.close();const pixels=ctx.getImageData(0,0,canvas.width,canvas.height);for(let i=0;i<pixels.data.length;i+=4){pixels.data[i+3]=pixels.data[i];pixels.data[i]=255;pixels.data[i+1]=107;pixels.data[i+2]=53;}ctx.putImageData(pixels,0,0);canvas.hidden=false;$('maskState').textContent='橙色为此刻实际处理范围';
+        canvas.width=source.width;canvas.height=source.height;const ctx=canvas.getContext('2d');drawTintedMask(ctx,bitmap,canvas.width,canvas.height);bitmap.close();canvas.hidden=false;$('maskState').textContent='橙色为此刻实际处理范围';
       }catch(error){if(epoch===maskEpoch&&$('showMask').checked)$('maskState').textContent=error.message;}
     }
     $('showMask').addEventListener('change',scheduleMask);
+    // The mask arrives as grey levels; the overlay is orange with that level as its alpha. A canvas colour-matrix filter does
+    // this in the compositor instead of looping over every pixel, and gives byte-identical pixels. A one-off probe over all 256
+    // levels checks that, and falls back to the original loop in any browser where the filter is missing or differs.
+    const maskFilter='url("data:image/svg+xml,'+encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg"><filter id="t" color-interpolation-filters="sRGB" x="0" y="0" width="100%" height="100%"><feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 ${107/255} 0 0 0 0 ${53/255} 1 0 0 0 0"/></filter></svg>`)+'#t")';
+    let maskFilterOk=null;
+    function tintMaskLoop(ctx,width,height){
+      const pixels=ctx.getImageData(0,0,width,height);for(let i=0;i<pixels.data.length;i+=4){pixels.data[i+3]=pixels.data[i];pixels.data[i]=255;pixels.data[i+1]=107;pixels.data[i+2]=53;}ctx.putImageData(pixels,0,0);
+    }
+    function probeMaskFilter(){
+      try{
+        const make=()=>{const c=document.createElement('canvas');c.width=256;c.height=1;return c;},grey=make(),gctx=grey.getContext('2d'),levels=gctx.createImageData(256,1);
+        for(let v=0;v<256;v++)levels.data.set([v,v,v,255],v*4);gctx.putImageData(levels,0,0);
+        const loop=make().getContext('2d'),filtered=make().getContext('2d');
+        loop.drawImage(grey,0,0);tintMaskLoop(loop,256,1);filtered.filter=maskFilter;filtered.drawImage(grey,0,0);filtered.filter='none';
+        const a=loop.getImageData(0,0,256,1).data,b=filtered.getImageData(0,0,256,1).data;return a.every((value,i)=>value===b[i]);
+      }catch{return false;}
+    }
+    function drawTintedMask(ctx,image,width,height){
+      if(maskFilterOk===null)maskFilterOk=probeMaskFilter();
+      if(maskFilterOk){ctx.filter=maskFilter;ctx.drawImage(image,0,0);ctx.filter='none';}
+      else{ctx.drawImage(image,0,0);tintMaskLoop(ctx,width,height);}
+    }
     async function loadResultReview(){
       if(!currentJobId||state!=='done')return;const jobId=currentJobId;
       try{const track=$('reviewTrack').value,data=await request(`/jobs/${jobId}/result-review${track?'?track_id='+encodeURIComponent(track):''}`);if(jobId!==currentJobId)return;resultRevision=data.result_revision;$('resultReview').hidden=false;$('reviewWindows').replaceChildren();
