@@ -693,7 +693,19 @@ def _bbox(points: np.ndarray, w: int, h: int) -> tuple[int, int, int, int]:
     return x1, y1, x2, y2
 
 
-_NO_CROP = np.empty((0, 0, 3), dtype=np.uint8)
+# Soft cap on the OCR crops kept while sampling; the pixels of any crop that
+# is read after the cap is reached are fetched again from the video.
+_OCR_CROP_BUDGET_MB = 64.0
+_OCR_CROPS_PER_REGION = 3
+
+
+def _ocr_crop_budget_bytes() -> int:
+    """Bytes of OCR crops to keep while sampling (``VIDEOWIPE_OCR_CROP_BUDGET_MB``)."""
+    try:
+        megabytes = float(os.environ["VIDEOWIPE_OCR_CROP_BUDGET_MB"])
+    except (KeyError, ValueError):
+        megabytes = _OCR_CROP_BUDGET_MB
+    return int(max(megabytes, 0.0) * 1024 * 1024)
 
 
 def _ocr_crops_by_box(
@@ -710,6 +722,41 @@ def _ocr_crops_by_box(
             x1, y1, x2, y2 = _bbox(box.points, w, h)
             crops[id(box)] = frame[y1:y2 + 1, x1:x2 + 1].copy()
     return crops
+
+
+def _refetch_ocr_crops(
+    video_path: str,
+    sample_count: int,
+    wanted: list[tuple[int, TextBox]],
+    box_crops: dict[int, np.ndarray],
+    w: int,
+    h: int,
+    check_cancelled: Callable[[], None] | None,
+) -> None:
+    """Crop the ``(sample_index, box)`` pairs not in *box_crops* from their own frames.
+
+    Reads the same sampled frames again, up to the last one wanted, so each crop
+    still comes from the frame its box was detected on.
+    """
+    missing: dict[int, list[TextBox]] = {}
+    for sample_index, box in wanted:
+        if id(box) not in box_crops:
+            missing.setdefault(sample_index, []).append(box)
+    if not missing:
+        return
+    frames = _iter_sample_frames_with_indices(
+        video_path, sample_count, check_cancelled=check_cancelled,
+    )
+    try:
+        for sample_index, frame in frames:
+            if sample_index in missing:
+                box_crops.update(
+                    _ocr_crops_by_box(frame, missing.pop(sample_index), w, h)
+                )
+            if not missing:
+                break
+    finally:
+        frames.close()
 
 
 def _zone(bbox: tuple[int, int, int, int], w: int, h: int) -> str:
@@ -1299,6 +1346,8 @@ def detect_clean_candidates(
     all_frame_boxes: list[tuple[int, list[TextBox]]] = []
     appearance_thumbnails: dict[int, np.ndarray] = {}
     box_crops: dict[int, np.ndarray] = {}
+    box_crop_bytes = 0
+    box_crop_budget = _ocr_crop_budget_bytes()
     first_frame = None
     best_preview = None
     best_preview_score = -1
@@ -1360,8 +1409,10 @@ def detect_clean_candidates(
         sampled_frame_boxes[sample_index] = boxes
         all_frame_boxes.append((sample_index, boxes))
         appearance_thumbnails[sample_index] = _appearance_thumbnail(frame)
-        if recognizer is not None:
-            box_crops.update(_ocr_crops_by_box(frame, boxes, w, h))
+        if recognizer is not None and box_crop_bytes < box_crop_budget:
+            crops = _ocr_crops_by_box(frame, boxes, w, h)
+            box_crops.update(crops)
+            box_crop_bytes += sum(crop.nbytes for crop in crops.values())
         frame_mask = np.zeros((h, w), dtype=np.uint8)
         for box in boxes:
             cv2.fillPoly(frame_mask, [box.points.astype(np.int32)], 1)
@@ -1404,7 +1455,7 @@ def detect_clean_candidates(
 
         for label_id, x1, y1, x2, y2 in raw_regions:
             text_samples: list[str] = []
-            ocr_crops: list[np.ndarray] = []
+            ocr_boxes: list[tuple[int, TextBox]] = []
             presence_frames: list[int] = []
             for sample_index, boxes in all_frame_boxes:
                 overlapped = False
@@ -1414,15 +1465,24 @@ def detect_clean_candidates(
                         bx1, by1, bx2, by2 = _bbox(box.points, w, h)
                         if box.text:
                             text_samples.append(box.text)
-                        elif recognizer is not None:
-                            crop = box_crops.get(id(box), _NO_CROP)
-                            if crop.size > 0:
-                                ocr_crops.append(crop)
+                        elif (
+                            recognizer is not None
+                            and len(ocr_boxes) < _OCR_CROPS_PER_REGION
+                            and bx1 <= bx2 and by1 <= by2
+                        ):
+                            ocr_boxes.append((sample_index, box))
                 if overlapped:
                     presence_frames.append(sample_index)
 
-            if not text_samples and ocr_crops and recognizer is not None:
-                for crop in ocr_crops[:3]:
+            if not text_samples and ocr_boxes and recognizer is not None:
+                _refetch_ocr_crops(
+                    video_path, sample_count, ocr_boxes, box_crops, w, h,
+                    check_cancelled,
+                )
+                for _, box in ocr_boxes:
+                    crop = box_crops.get(id(box))
+                    if crop is None:
+                        continue
                     try:
                         text = recognizer(crop)
                     except Exception:

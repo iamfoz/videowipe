@@ -6,6 +6,8 @@ import pytest
 from videowipe.detect import (
     TextBox,
     _bbox,
+    _iter_sample_frames_with_indices,
+    _ocr_crop_budget_bytes,
     _ocr_crops_by_box,
     detect_clean_candidates,
 )
@@ -161,3 +163,140 @@ def test_no_recogniser_leaves_text_less_boxes_unread(tmp_path):
     assert outcome == (
         "scene_text", "text in center", False, [], [6, 7, 8, 9, 10, 11],
     )
+
+
+# Bounding the crops kept while sampling. Only the first three text-less boxes
+# of a region are ever read, so the crops held must not grow with the samples.
+ROW_COUNT = 40
+ROW_BOXES = [
+    np.array([[40, 30], [280, 30], [280, 70], [40, 70]]),
+    np.array([[40, 100], [280, 100], [280, 140], [40, 140]]),
+]
+
+
+def _write_two_row_video(path):
+    writer = cv2.VideoWriter(
+        str(path), cv2.VideoWriter_fourcc(*"mp4v"), 4, (WIDTH, HEIGHT),
+    )
+    for i in range(ROW_COUNT):
+        frame = np.full((HEIGHT, WIDTH, 3), BACKGROUND, dtype=np.uint8)
+        frame[30:71, 40:281] = 100 + 3 * i
+        frame[100:141, 40:281] = 200 - 3 * i
+        writer.write(frame)
+    writer.release()
+
+
+class _TwoRowDetector:
+    def detect(self, frame):
+        return [TextBox(points=points, confidence=0.9) for points in ROW_BOXES]
+
+
+def _spy_crop_bytes(monkeypatch):
+    created = []
+    original = _ocr_crops_by_box
+
+    def spy(*args):
+        crops = original(*args)
+        created.extend(crop.nbytes for crop in crops.values())
+        return crops
+
+    monkeypatch.setattr("videowipe.detect._ocr_crops_by_box", spy)
+    return created
+
+
+def _run_two_rows(tmp_path, monkeypatch, budget):
+    video = tmp_path / "rows.mp4"
+    if not video.exists():
+        _write_two_row_video(video)
+    monkeypatch.setenv("VIDEOWIPE_OCR_CROP_BUDGET_MB", budget)
+    created = _spy_crop_bytes(monkeypatch)
+    recogniser = _Recogniser("caption")
+    result = detect_clean_candidates(
+        str(video), detector=_TwoRowDetector(), sample_count=ROW_COUNT,
+        recognizer=recogniser,
+    )
+    return result, recogniser, sum(created)
+
+
+def test_crops_kept_while_sampling_stay_within_the_budget(tmp_path, monkeypatch):
+    _, _, unbounded = _run_two_rows(tmp_path, monkeypatch, "1000")
+    one_sample = 2 * 41 * 241 * 3
+    assert unbounded == ROW_COUNT * one_sample  # one copy per box per sample
+
+    # Room for about three samples; the crop held is only ever overshot by one.
+    _, _, bounded = _run_two_rows(tmp_path, monkeypatch, str(3.5 * one_sample / 2**20))
+
+    assert bounded <= 4 * one_sample
+
+
+def test_crops_read_after_the_budget_match_the_unbounded_run(tmp_path, monkeypatch):
+    kept, read_kept, _ = _run_two_rows(tmp_path, monkeypatch, "1000")
+    for budget in ("0", "0.01"):
+        refetched, read_refetched, held = _run_two_rows(tmp_path, monkeypatch, budget)
+
+        assert len(read_refetched.crops) == len(read_kept.crops) == 6
+        for got, want in zip(read_refetched.crops, read_kept.crops):
+            assert np.array_equal(got, want)
+        assert [
+            (c.type, c.reason, c.default_remove, c.text_samples, c.presence_frames)
+            for c in refetched.candidates
+        ] == [
+            (c.type, c.reason, c.default_remove, c.text_samples, c.presence_frames)
+            for c in kept.candidates
+        ]
+        assert held <= 6 * 41 * 241 * 3  # only the crops that are read
+
+
+@pytest.mark.parametrize("budget", ["0", "1000"])
+def test_late_box_is_read_from_its_own_frame_whatever_the_budget(
+    tmp_path, monkeypatch, budget,
+):
+    video = tmp_path / "input.mp4"
+    _write_late_text_video(video)
+    monkeypatch.setenv("VIDEOWIPE_OCR_CROP_BUDGET_MB", budget)
+    recogniser = _Recogniser("@brand")
+
+    detect_clean_candidates(
+        str(video), detector=_LateTextDetector(), sample_count=FRAMES,
+        recognizer=recogniser,
+    )
+
+    assert len(recogniser.crops) == 3
+    for crop, frame_index in zip(recogniser.crops, (6, 7, 8)):
+        assert crop.shape[:2] == (21, 81)
+        assert abs(float(np.median(crop)) - _level(frame_index)) <= 8
+
+
+def test_frames_are_read_once_while_crops_fit_in_the_budget(tmp_path, monkeypatch):
+    video = tmp_path / "input.mp4"
+    _write_late_text_video(video)
+    reads = []
+    original = _iter_sample_frames_with_indices
+    monkeypatch.setattr(
+        "videowipe.detect._iter_sample_frames_with_indices",
+        lambda *args, **kwargs: reads.append(1) or original(*args, **kwargs),
+    )
+    monkeypatch.delenv("VIDEOWIPE_OCR_CROP_BUDGET_MB", raising=False)
+
+    detect_clean_candidates(
+        str(video), detector=_LateTextDetector(), sample_count=FRAMES,
+        recognizer=_Recogniser("12:30"),
+    )
+
+    assert len(reads) == 1
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, 64 * 2**20), ("", 64 * 2**20), ("lots", 64 * 2**20),
+        ("8", 8 * 2**20), ("0.5", 2**19), ("0", 0), ("-3", 0),
+    ],
+)
+def test_budget_override(monkeypatch, value, expected):
+    if value is None:
+        monkeypatch.delenv("VIDEOWIPE_OCR_CROP_BUDGET_MB", raising=False)
+    else:
+        monkeypatch.setenv("VIDEOWIPE_OCR_CROP_BUDGET_MB", value)
+
+    assert _ocr_crop_budget_bytes() == expected
