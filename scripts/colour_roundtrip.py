@@ -264,13 +264,29 @@ def tag_args(tags):
     return args
 
 
+_SETPARAMS_NAME = {"colorspace": "colorspace", "color_primaries": "color_primaries",
+                   "color_trc": "color_trc", "color_range": "range"}
+
+
+def frame_tags(tags):
+    """A ``setparams`` filter labelling frames with *tags* without converting them;
+    ``None`` labels them unknown. Newer ffmpeg (9.0.2) writes only what the frames
+    carry, converts pixels to match colour options on the output, and lets the
+    scale filter label what it converts, so labels must be set here."""
+    if tags is None:
+        return "setparams=colorspace=unknown:color_primaries=unknown:color_trc=unknown:range=unknown"
+    if not tags:
+        return "null"
+    return "setparams=" + ":".join(f"{_SETPARAMS_NAME[k]}={v}" for k, v in tags.items())
+
+
 def make_source(path, spec: SourceClass, frames_rgb, fps=25):
     """Encode *frames_rgb* losslessly (``-crf 0``) as *spec*: converted with its
     matrix and range, tagged as its tags say (none at all when ``tags`` is None)."""
     h, w = frames_rgb.shape[1:3]
     scale = (f"scale=out_color_matrix={SCALE_NAME[spec.matrix]}:out_range="
              f"{'tv' if spec.range == 'tv' else 'pc'}:flags=accurate_rnd+full_chroma_int,"
-             f"format={spec.pix_fmt}")
+             f"format={spec.pix_fmt},{frame_tags(spec.tags)}")
     cmd = ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
            "-r", str(fps), "-i", "-", "-vf", scale, "-c:v", "libx264", "-preset", "veryfast",
            "-crf", "0", *tag_args(spec.tags), str(path)]
@@ -465,7 +481,8 @@ def make_probe_clip(path, w, h, space, rng, frames=12, primaries=None, trc=None)
         tags["color_trc"] = trc
     tags["color_range"] = rng
     run(["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", f"{w}x{h}",
-         "-r", "25", "-i", "-", "-c:v", "libx264", "-crf", "0", *tag_args(tags), str(path)], input=raw)
+         "-r", "25", "-i", "-", "-vf", frame_tags(tags), "-c:v", "libx264", "-crf", "0", *tag_args(tags),
+         str(path)], input=raw)
 
 
 def patch_means(planes, w, h):

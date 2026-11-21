@@ -211,10 +211,12 @@ def test_untagged_and_hdr_sources_are_left_alone(job, monkeypatch, capsys):
 def test_a_tagged_source_gets_a_matching_conversion_and_its_tags(job, monkeypatch, capsys):
     stub(monkeypatch, HD709, ("bt709", "tv"))
     plan = colour.plan_output_colour(job)
-    assert plan.options == ("-vf", "scale=out_color_matrix=bt709:out_range=tv", "-colorspace", "bt709",
+    assert plan.options == ("-vf", "scale=out_color_matrix=bt709:out_range=tv,setparams=colorspace=bt709:"
+                            "color_primaries=bt709:color_trc=bt709:range=tv", "-colorspace", "bt709",
                             "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv")
     # The further (limited-range) output: converted once with the same matrix.
-    assert plan.second == ("-vf", "scale=out_color_matrix=bt709:out_range=tv", "-colorspace", "bt709",
+    assert plan.second == ("-vf", "scale=out_color_matrix=bt709:out_range=tv,setparams=colorspace=bt709:"
+                           "color_primaries=bt709:color_trc=bt709:range=tv", "-colorspace", "bt709",
                            "-color_primaries", "bt709", "-color_trc", "bt709")
     assert capsys.readouterr().out == ""
 
@@ -222,8 +224,8 @@ def test_a_tagged_source_gets_a_matching_conversion_and_its_tags(job, monkeypatc
 def test_a_full_range_source_is_converted_to_full_range(job, monkeypatch):
     stub(monkeypatch, colour.SourceColour(1280, 720, "yuvj420p", "bt709", None, None, "pc"), ("bt709", "pc"))
     plan = colour.plan_output_colour(job)
-    assert plan.options == ("-vf", "scale=out_color_matrix=bt709:out_range=pc", "-colorspace", "bt709",
-                            "-color_range", "pc")
+    assert plan.options == ("-vf", "scale=out_color_matrix=bt709:out_range=pc,setparams=colorspace=bt709:"
+                            "range=pc", "-colorspace", "bt709", "-color_range", "pc")
 
 
 def test_where_the_decoder_already_matches_ffmpegs_default_only_tags_are_added(job, monkeypatch):
@@ -231,7 +233,8 @@ def test_where_the_decoder_already_matches_ffmpegs_default_only_tags_are_added(j
     turns back into the source's own YCbCr: only the tags are missing."""
     stub(monkeypatch, HD709, ("bt601", "tv"))
     plan = colour.plan_output_colour(job)
-    assert plan.options == ("-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+    assert plan.options == ("-vf", "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv",
+                            "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
                             "-color_range", "tv")
     assert plan.second == ()  # BGR is not the picture's true colours then
 
@@ -419,7 +422,8 @@ def test_it_composes_with_the_source_timestamps_of_a_variable_rate_source(tmp_pa
     subprocess.run(
         ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=1280x720:r=25",
          "-vf", "settb=1/1000000,setpts='(N/25+0.013*sin(N*1.7)+0.3)/TB',"
-                "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
+                "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,"
+                "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv",
          "-frames:v", "20", "-fps_mode", "passthrough", "-enc_time_base", "1:1000000",
          "-video_track_timescale", "90000", "-colorspace", "bt709", "-color_primaries", "bt709",
          "-color_trc", "bt709", "-color_range", "tv", "-c:v", "libx264", str(source)],

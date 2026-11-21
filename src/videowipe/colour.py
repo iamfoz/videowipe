@@ -26,7 +26,10 @@ This module makes the encode the inverse of what the decoder did, and says so:
 3. ffmpeg is told to convert BGR to YCbCr with that matrix and range
    (``-vf scale=out_color_matrix=..:out_range=..``) and the output is tagged with
    the source's own tags. The YCbCr values of untouched pixels then go through
-   unchanged, and the tags describe them truthfully.
+   unchanged, and the tags describe them truthfully. The tags are set on the
+   frames (``setparams``) as well as on the output: newer ffmpeg (measured on
+   9.0.2) treats colour options on the output as a request to convert the pixels
+   to them, and writes only the tags the frames carry.
 4. The result is checked by running ffmpeg on known colours first (the tags come
    out as asked and the YCbCr values are those of the chosen matrix and range).
 
@@ -219,6 +222,24 @@ def _tag_options(space, primaries, transfer, rng):
     return options
 
 
+def _frame_tags(space, primaries, transfer, rng) -> str:
+    """A ``setparams`` filter that labels the frames with these tags without
+    converting them ("" when there is nothing to label). Newer ffmpeg converts
+    the pixels to match colour options given on the output unless the frames
+    already carry them, and writes only what the frames carry."""
+    fields = [f"{name}={value}" for name, value in (
+        ("colorspace", space), ("color_primaries", primaries),
+        ("color_trc", transfer), ("range", rng)) if value is not None]
+    return "setparams=" + ":".join(fields) if fields else ""
+
+
+def _labelled(filters, space, primaries, transfer, rng):
+    """``-vf`` with *filters* then the frame labels, followed by the same tags
+    as output options (which older ffmpeg needs to write them)."""
+    chain = [f for f in (*filters, _frame_tags(space, primaries, transfer, rng)) if f]
+    return (["-vf", ",".join(chain)] if chain else []) + _tag_options(space, primaries, transfer, rng)
+
+
 @functools.lru_cache(maxsize=32)
 def decoder_conversion(width: int, height: int, space, primaries, transfer, rng) -> tuple | None:
     """``(matrix, range)`` that ``cv2.VideoCapture`` converts to BGR with, for an
@@ -236,7 +257,7 @@ def decoder_conversion(width: int, height: int, space, primaries, transfer, rng)
     cmd = ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "yuv420p",
            "-s", f"{width}x{height}", "-r", "25", "-i", "-", "-frames:v", "2",
            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "1", "-profile:v", "high",
-           "-pix_fmt", "yuv420p", *_tag_options(space, primaries, transfer, rng)]
+           "-pix_fmt", "yuv420p", *_labelled((), space, primaries, transfer, rng)]
     raw = probe_yuv_frame(width, height)
     with tempfile.TemporaryDirectory(prefix="videowipe-colour-") as folder:
         path = os.path.join(folder, "probe.mp4")
@@ -263,12 +284,12 @@ def decoder_conversion(width: int, height: int, space, primaries, transfer, rng)
 # -- the plan ------------------------------------------------------------------------
 
 
-def _scale_options(matrix: str, rng: str):
-    """Options that make ffmpeg convert BGR with *matrix* and *rng* (none for the
-    conversion it makes anyway)."""
+def _scale_filters(matrix: str, rng: str):
+    """The filter that makes ffmpeg convert BGR with *matrix* and *rng* (none for
+    the conversion it makes anyway)."""
     if (matrix, rng) == DEFAULT_CONVERSION:
         return []
-    return ["-vf", f"scale=out_color_matrix={matrix}:out_range={rng}"]
+    return [f"scale=out_color_matrix={matrix}:out_range={rng}"]
 
 
 def check_encode(options, matrix: str, rng: str, expected_tags: dict) -> bool:
@@ -414,8 +435,8 @@ def plan_output_colour(job) -> OutputColour:
     tags = {"-colorspace": source.space, "-color_primaries": source.primaries,
             "-color_trc": source.transfer, "-color_range": rng}
     tags = {flag: value for flag, value in tags.items() if value is not None}
-    options = _scale_options(matrix, rng) + _tag_options(
-        tags.get("-colorspace"), tags.get("-color_primaries"), tags.get("-color_trc"), rng)
+    options = _labelled(_scale_filters(matrix, rng), tags.get("-colorspace"),
+                        tags.get("-color_primaries"), tags.get("-color_trc"), rng)
     if not check_encode(options, matrix, rng, tags):
         print("Warning: this ffmpeg did not apply the source's colour tags with a matching "
               "conversion; the output carries none.")
@@ -426,6 +447,7 @@ def plan_output_colour(job) -> OutputColour:
     reads_as = (TAG_MATRIX.get(source.space), source.range or "tv")
     second = ()
     if source.space is not None and (matrix, rng) == reads_as:
-        second = tuple(["-vf", f"scale=out_color_matrix={matrix}:out_range=tv"]
+        second = tuple(["-vf", f"scale=out_color_matrix={matrix}:out_range=tv,"
+                        + _frame_tags(source.space, source.primaries, source.transfer, "tv")]
                        + _tag_options(source.space, source.primaries, source.transfer, None))
     return OutputColour(tuple(options), second, _describe(matrix, rng, source))

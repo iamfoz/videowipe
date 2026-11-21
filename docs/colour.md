@@ -170,6 +170,16 @@ Any other value means `auto`.
   * the ffmpeg command is not the shape expected ("could not keep the source's
     colour tags with this ffmpeg command").
 
+## Newer ffmpeg
+
+ffmpeg 9.0.2 (measured on the reference Mac) differs from 6.1.1 in two ways that
+matter here: colour options on the output (`-colorspace`, `-color_range`, ...)
+make it convert the pixels to them instead of only labelling the file, and it
+writes only the tags the frames themselves carry (the scale filter labels what it
+converts). So every tag is set on the frames with `setparams` as well as given on
+the output. On ffmpeg 6.1.1 the output is byte-identical to the earlier command
+(six source classes compared).
+
 ## Limits
 
 * 8-bit output only; a source with more bits (10-bit BT.709 was measured and
