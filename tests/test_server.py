@@ -1314,7 +1314,8 @@ def test_editor_seconds_roundtrip_preserves_frame_boundaries():
     if shutil.which('node'):
         html = server_app._web_index().read_text(encoding="utf-8")
         function = html.split('    function parseIntervals(text) {', 1)[1].split('    function edited()', 1)[0]
-        code = 'const assert=require("node:assert/strict");let source={fps:25,frame_count:1000};const duration=()=>source.frame_count/source.fps;'
+        helpers = '//' + html.split('    // Frames <-> seconds.', 1)[1].split('    const evidenceImages', 1)[0]
+        code = 'const assert=require("node:assert/strict");let source={fps:25,frame_count:1000};const duration=()=>source.frame_count/source.fps;' + helpers
         code += 'function parseIntervals(text) {' + function
         code += 'for(const fps of [25,29.97,30000/1001]){source.fps=fps;for(let n=0;n<999;n++)assert.deepEqual(parseIntervals(`${n/fps}, ${(n+1)/fps}`),[[n,n+1]]);}'
         subprocess.run(['node', '-e', code], check=True)

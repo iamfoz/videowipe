@@ -328,13 +328,26 @@
     let maskEpoch=0, maskTimer=null, maskHasRemoval=true, knownRemoval=null;
     const playbackLease=crypto.randomUUID();
     const canEdit=()=>reviewLoaded&&["pending","preview_ready","done"].includes(state);
+    // Frames <-> seconds. A variable-frame-rate source arrives with its real frame start times
+    // (source.frame_times, plus the end of the last frame); any other source is frame / fps.
+    const f2s = frame => { const t=source.frame_times; return t ? t[Math.max(0,Math.min(Math.round(frame),t.length-1))] : frame/source.fps; };
+    const s2f = seconds => {
+      const t=source.frame_times; if(!t)return seconds*source.fps;
+      let lo=0,hi=t.length; while(lo<hi){const mid=(lo+hi)>>1; if(t[mid]<=seconds)lo=mid+1; else hi=mid;}
+      const at=lo-1; return at<0?0:at>=t.length-1?t.length-1:at+(seconds-t[at])/(t[at+1]-t[at]);
+    };
     const evidenceImages = new Map();
     const fmt = (value, decimal=false) => { const t=Math.max(0,Number(value)||0); return String(Math.floor(t/60)).padStart(2,"0")+":"+(decimal?(t%60).toFixed(2).padStart(5,"0"):String(Math.floor(t%60)).padStart(2,"0")); };
-    const duration = () => source ? source.frame_count / source.fps : 0;
+    const duration = () => source ? f2s(source.frame_count) : 0;
+    const share = frame => source.frame_times ? f2s(frame)/duration()*100 : frame/source.frame_count*100;
+    // refreshMask turns position() into a frame with `* source.fps`: while it starts (nominalPositions), a variable-rate
+    // source reports the position as the seconds at which that product is the frame ordinal. Otherwise position() is time.
+    let nominalPositions = false;
+    const stepFrom = (at,direction) => source?.frame_times ? f2s(Math.max(0,Math.min(source.frame_count-1,Math.floor(s2f(at)+1e-7)+direction))) : at+direction/(source?.fps||25);
     const busy = () => busyStates.has(state);
     const effectiveSegments = track => segmentDrafts[track.id] || track.segments;
     const selectedTracks = () => tracks.filter(t => selectedIds.includes(t.id)).map(t=>({...t,segments:effectiveSegments(t)}));
-    const position = () => video.currentTime + (view === "trial" && trial ? trial.start_seconds : 0);
+    const position = () => { const at = video.currentTime + (view === "trial" && trial ? trial.start_seconds : 0); return nominalPositions && source?.frame_times ? (s2f(at)+1e-7)/source.fps : at; };
     const effectiveBBox = track => bboxDrafts[track.id] || track.bbox;
     function trackName(track) {
       const label=({"bottom subtitle":"底部字幕","top watermark":"顶部水印","top logo":"顶部标记"}[track.label] || track.label || {subtitle:"字幕",watermark:"水印",logo:"标记",text:"文字"}[track.type] || "画面文字");
@@ -377,7 +390,7 @@
     function validRange() {
       if(!maskHasRemoval||!source||!$("start").value.trim()||!$("start").validity.valid)return false;
       const first=Number($("start").value), last=Math.min(duration(),first+Number($("duration").value));
-      return Number.isFinite(first)&&first>=0&&first<last&&selectedTracks().some(t=>(t.has_mask!==false||bboxDrafts[t.id])&&t.segments.some(([a,b])=>a<Math.ceil(last*source.fps)&&b>Math.floor(first*source.fps)));
+      return Number.isFinite(first)&&first>=0&&first<last&&selectedTracks().some(t=>(t.has_mask!==false||bboxDrafts[t.id])&&t.segments.some(([a,b])=>a<Math.ceil(s2f(last))&&b>Math.floor(s2f(first))));
     }
     function recommend() {
       if(!source)return;
@@ -386,7 +399,7 @@
         const last=merged.at(-1); if(last&&row[0]<=last[1])last[1]=Math.max(last[1],row[1]); else merged.push(row.slice());
       }
       merged.sort((a,b)=>(b[1]-b[0])-(a[1]-a[0])||a[0]-b[0]);
-      if(merged.length){const [a,b]=merged[0],length=Math.min(duration(),Number($("duration").value));$("start").value=String(Math.max(0,Math.min(duration()-length,(a+b)/(2*source.fps)-length/2)));}
+      if(merged.length){const [a,b]=merged[0],length=Math.min(duration(),Number($("duration").value));$("start").value=String(Math.max(0,Math.min(duration()-length,(source.frame_times?(f2s(a)+f2s(b))/2:(a+b)/(2*source.fps))-length/2)));}
     }
     function invalidateTrial() {
       if(trial&&signature(trial.request)!==signature(reviewRequest())) { const at=position();trial=null;if(view==="trial")void setMedia("source",at); }
@@ -395,7 +408,7 @@
     function updateMeta() {
       if(!source)return;
       $("filemeta").textContent=`${fmt(duration(),true)} · ${source.width} × ${source.height}${source.provisional?"":` · ${Number(source.fps.toFixed(3))} fps`}`;
-      $("seek").max=duration();$("seek").step=1/source.fps;$("start").max=Math.max(0,(source.frame_count-1)/source.fps);$("start").step="any";
+      $("seek").max=duration();$("seek").step=source.frame_times?"any":1/source.fps;$("start").max=Math.max(0,f2s(source.frame_count-1));$("start").step="any";
       $("totalTime").textContent=fmt(duration(),true);$("midTick").textContent=fmt(duration()/2);$("endTick").textContent=fmt(duration());
       $("stage").style.setProperty("--ratio",source.width/(source.height*(view==="trial"?2:1)));
     }
@@ -436,7 +449,7 @@
     }
     function renderTimeline() {
       $("presenceTrack").replaceChildren(); if(!source){$("trialWindow").hidden=true;$("windowLabel").textContent="";$("rangeLabel").textContent="拖动时间轴查看原片";return;}
-      for(const track of selectedTracks())for(const [a,b] of track.segments){const span=document.createElement("span");span.className="presence";span.style.left=a/source.frame_count*100+"%";span.style.width=(b-a)/source.frame_count*100+"%";$("presenceTrack").append(span);}
+      for(const track of selectedTracks())for(const [a,b] of track.segments){const span=document.createElement("span");span.className="presence";span.style.left=share(a)+"%";span.style.width=(source.frame_times?share(b)-share(a):(b-a)/source.frame_count*100)+"%";$("presenceTrack").append(span);}
       const start=Number($("start").value),end=Math.min(duration(),start+Number($("duration").value));
       $("trialWindow").hidden=!reviewLoaded||!validRange();$("trialWindow").style.left=start/duration()*100+"%";$("trialWindow").style.width=(end-start)/duration()*100+"%";
       $("windowLabel").textContent=reviewLoaded&&validRange()?`试擦 ${fmt(start,true)}–${fmt(end,true)}`:"";
@@ -473,7 +486,7 @@
         checkbox.addEventListener("change",()=>{selectedIds=checkbox.checked?[...selectedIds,track.id]:selectedIds.filter(id=>id!==track.id);if(!manualTime)recommend();invalidateTrial();renderTargets();renderOverlays();void saveReview();});
         const button=document.createElement("button");button.className="target-inspect";button.type="button";button.setAttribute("aria-label","定位"+trackName(track));button.addEventListener("click",()=>inspect(track.id));
         const title=document.createElement("span");title.className="target-title";title.textContent=trackName(track);const badge=document.createElement("small");badge.textContent=checkbox.checked?"移除":"保留";title.append(badge);
-        const meta=document.createElement("span");meta.className="target-meta";meta.textContent=effectiveSegments(track).length?effectiveSegments(track).map(([a,b])=>`${fmt(a/source.fps,true)}–${fmt(b/source.fps,true)}`).join("、"):"无有效时间";
+        const meta=document.createElement("span");meta.className="target-meta";meta.textContent=effectiveSegments(track).length?effectiveSegments(track).map(([a,b])=>`${fmt(f2s(a),true)}–${fmt(f2s(b),true)}`).join("、"):"无有效时间";
         if(track.evidence_kind!=="observed")meta.textContent+=" · 位置参考";
         const canvas=document.createElement("canvas");canvas.setAttribute("role","img");canvas.setAttribute("aria-label",trackName(track)+"原片裁剪");
         button.append(title,meta,canvas);row.append(checkbox,button);$("targetList").append(row);
@@ -484,9 +497,9 @@
     }
     function updateEditor() {
       const track=tracks.find(t=>t.id===activeTrackId);$("editor").hidden=!track||!selectedIds.includes(track.id);
-      if(!track)return;$("segmentsInput").value=effectiveSegments(track).map(([a,b])=>`${a/source.fps}, ${b/source.fps}`).join("\n");const [x,y,x2]=effectiveBBox(track);$("editorTitle").textContent=trackName(track)+" · 区域框";$("boxWidth").value=(x2-x+1)/source.width*100;$("boxY").value=y/source.height*100;$("widthValue").textContent=Math.round((x2-x+1)/source.width*100)+"%";$("yValue").textContent=Math.round(y/source.height*100)+"%";
+      if(!track)return;$("segmentsInput").value=effectiveSegments(track).map(([a,b])=>`${f2s(a)}, ${f2s(b)}`).join("\n");const [x,y,x2]=effectiveBBox(track);$("editorTitle").textContent=trackName(track)+" · 区域框";$("boxWidth").value=(x2-x+1)/source.width*100;$("boxY").value=y/source.height*100;$("widthValue").textContent=Math.round((x2-x+1)/source.width*100)+"%";$("yValue").textContent=Math.round(y/source.height*100)+"%";
     }
-    function inspect(id) { activeTrackId=id;const track=tracks.find(t=>t.id===id);renderTargets();void setMedia("source",track.evidence_frame/source.fps); }
+    function inspect(id) { activeTrackId=id;const track=tracks.find(t=>t.id===id);renderTargets();void setMedia("source",f2s(track.evidence_frame)); }
     function imageMetrics() {
       if(!source)return null;const rect=$("stage").getBoundingClientRect();const scale=Math.min(rect.width/source.width,rect.height/source.height);
       return {scale,left:(rect.width-source.width*scale)/2,top:(rect.height-source.height*scale)/2,sourceWidth:source.width,sourceHeight:source.height};
@@ -569,7 +582,7 @@
       for(const box of $("overlays").children){const track=tracks.find(t=>t.id===box.dataset.trackId);if(!track)continue;const [x,y,x2,y2]=effectiveBBox(track);Object.assign(box.style,{left:metrics.left+x*metrics.scale+"px",top:metrics.top+y*metrics.scale+"px",width:(x2-x+1)*metrics.scale+"px",height:(y2-y+1)*metrics.scale+"px"});}
     }
     function updateOverlayVisibility() {
-      const frame=sourceSupported?Math.floor(position()*(source?.fps||25)+1e-7):(tracks.find(t=>t.id===activeTrackId)?.evidence_frame||0);
+      const frame=sourceSupported?Math.floor((source?s2f(position()):position()*25)+1e-7):(tracks.find(t=>t.id===activeTrackId)?.evidence_frame||0);
       for(const box of $("overlays").children){const track=tracks.find(t=>t.id===box.dataset.trackId);box.hidden=!track.segments.some(([a,b])=>a<=frame&&frame<b);}
     }
     function renderOverlays() {
@@ -610,7 +623,7 @@
       if(preview.previous_review?.overrides){const old=preview.previous_review;for(const candidate of old.candidates){const item=document.createElement("p"),box=old.overrides.bbox_overrides?.[candidate.id]||candidate.bbox;item.textContent=`${old.overrides.selected_ids.includes(candidate.id)?"移除":"保留"} · ${candidate.label} · 区域 ${box.join(", ")}`;$("previousReviewItems").append(item);}}
       if(!keepDraft){savedReview={selected_ids:[...selectedIds],bbox_overrides:structuredClone(bboxDrafts),segment_overrides:structuredClone(segmentDrafts),protections:structuredClone(protections)};undoStack=[];}
       reviewLoaded=true;renderProtections();activeTrackId=tracks[0]?.id||null;$("filename").textContent=preview.original_filename;updateMeta();renderTargets();renderTimeline();renderOverlays();
-      if(state==="preview_ready"&&!(preview.trial?.ready&&signature(preview.trial.request)===signature(reviewRequest()))){const stored=Number(preview.trial?.start_seconds||0);void setMedia("source",stored||((tracks[0]?.evidence_frame||0)/source.fps));}
+      if(state==="preview_ready"&&!(preview.trial?.ready&&signature(preview.trial.request)===signature(reviewRequest()))){const stored=Number(preview.trial?.start_seconds||0);void setMedia("source",stored||(f2s(tracks[0]?.evidence_frame||0)));}
     }
     function closeStream(){if(stream){stream.close();stream=null;}}
     async function applyStatus(data) {
@@ -708,7 +721,7 @@
         if(parts.length!==2||parts.some(value=>value===''))throw new Error('每行填写开始秒数, 结束秒数');
         const [a,b]=parts.map(Number);
         if(!Number.isFinite(a)||!Number.isFinite(b)||a<0||a>=b||b>duration())throw new Error('时间需在视频内，且结束晚于开始');
-        const frames=[a,b].map(value=>{const f=value*source.fps;return Math.abs(f-Math.round(f))<1e-9?Math.round(f):f;});
+        const frames=[a,b].map(value=>{const f=s2f(value);return Math.abs(f-Math.round(f))<1e-9?Math.round(f):f;});
         return [Math.floor(frames[0]),Math.min(source.frame_count,Math.ceil(frames[1]))];
       });
     }
@@ -720,7 +733,7 @@
       $('protectionList').replaceChildren();$('protectionCount').textContent=protections.length;
       for(const region of protections){const row=document.createElement('div');row.className='protection-row';
         const label=document.createElement('label');label.textContent='矩形坐标：左, 上, 右, 下（像素）';const box=document.createElement('input');box.value=region.bbox.join(', ');box.setAttribute('aria-label','保护区域矩形坐标');label.append(box);
-        const timeLabel=document.createElement('label');timeLabel.textContent='保护时间（秒，每行：开始, 结束）';const intervals=document.createElement('textarea');intervals.className='segment-edit';intervals.value=region.segments.map(([a,b])=>`${a/source.fps}, ${b/source.fps}`).join('\n');timeLabel.append(intervals);
+        const timeLabel=document.createElement('label');timeLabel.textContent='保护时间（秒，每行：开始, 结束）';const intervals=document.createElement('textarea');intervals.className='segment-edit';intervals.value=region.segments.map(([a,b])=>`${f2s(a)}, ${f2s(b)}`).join('\n');timeLabel.append(intervals);
         const save=document.createElement('button');save.textContent='保存保护区域';save.type='button';save.disabled=!canEdit();save.onclick=()=>{try{const values=box.value.split(/[,，]/).map(v=>v.trim());const coords=values.map(Number);if(values.some(v=>v==='')||coords.length!==4||!coords.every(Number.isInteger)||coords[0]<0||coords[1]<0||coords[2]<=coords[0]||coords[3]<=coords[1]||coords[2]>=source.width||coords[3]>=source.height)throw new Error('保护矩形需在画面内且至少 2×2 像素');const segments=parseIntervals(intervals.value);region.bbox=coords;region.segments=segments;edited();renderProtections();}catch(error){notify(error.message,'error');}};
         const remove=document.createElement('button');remove.textContent='删除保护';remove.type='button';remove.disabled=!canEdit();remove.onclick=()=>{protections=protections.filter(p=>p.id!==region.id);edited();renderProtections();};row.append(label,timeLabel,save,remove);$('protectionList').append(row);
       }
@@ -742,7 +755,7 @@
       canvas.onpointerup=()=>{canvas.onpointermove=canvas.onpointerup=null;endDrawing();if(box&&box[2]>box[0]&&box[3]>box[1])addProtection(box);};canvas.onpointercancel=()=>{canvas.onpointermove=canvas.onpointerup=null;endDrawing();};
     });
     document.addEventListener('keydown',event=>{if(event.key==='Escape')endDrawing();});
-    function scheduleMask(){clearTimeout(maskTimer);maskTimer=setTimeout(()=>void refreshMask(),120);}
+    function scheduleMask(){clearTimeout(maskTimer);maskTimer=setTimeout(()=>{nominalPositions=true;try{void refreshMask();}finally{nominalPositions=false;}},120);}
     async function refreshMask(){
       const canvas=$('maskCanvas');canvas.hidden=true;
       if(!currentJobId||!finalPlanReady||saving||busy()||view==='trial')return;
@@ -765,21 +778,21 @@
       if(!currentJobId||state!=='done')return;const jobId=currentJobId;
       try{const track=$('reviewTrack').value,data=await request(`/jobs/${jobId}/result-review${track?'?track_id='+encodeURIComponent(track):''}`);if(jobId!==currentJobId)return;resultRevision=data.result_revision;$('resultReview').hidden=false;$('reviewWindows').replaceChildren();
         const chosen=$('reviewTrack').value;$('reviewTrack').replaceChildren(new Option('建议位置',''),...tracks.map(t=>new Option(trackName(t),t.id)));$('reviewTrack').value=chosen;
-        for(const window of data.windows){const row=document.createElement('div');row.className='review-window';const go=document.createElement('button');go.type='button';go.textContent=`${fmt(window.start/source.fps,true)}–${fmt(window.end/source.fps,true)} · ${[...new Set(window.origins.map(o=>o.reason))].join(' / ')}`;go.onclick=async()=>{try{loopWindow=[window.start,window.end];await setMedia('clean',window.start/source.fps);await video.play();}catch(error){notify(error.message,'error');}};
+        for(const window of data.windows){const row=document.createElement('div');row.className='review-window';const go=document.createElement('button');go.type='button';go.textContent=`${fmt(f2s(window.start),true)}–${fmt(f2s(window.end),true)} · ${[...new Set(window.origins.map(o=>o.reason))].join(' / ')}`;go.onclick=async()=>{try{loopWindow=[window.start,window.end];await setMedia('clean',f2s(window.start));await video.play();}catch(error){notify(error.message,'error');}};
           const seen=document.createElement('button');seen.type='button';const frame=window.origins[0].frame;seen.textContent=data.marks.some(m=>m.frame_index===frame&&m.status==='seen')?'已看过':'看过了';seen.onclick=()=>void markResult(frame,'seen');const issue=document.createElement('button');issue.type='button';issue.textContent=data.marks.some(m=>m.frame_index===frame&&m.status==='issue')?'已标记问题':'标记问题';issue.onclick=()=>void markResult(frame,'issue');row.append(go,seen,issue);$('reviewWindows').append(row);}
       }catch(error){notify(error.message,'error');}
     }
     async function markResult(frame,status){try{await postJson(`/jobs/${currentJobId}/result-review`,{result_revision:resultRevision,frame_index:frame,status});await loadResultReview();}catch(error){notify(error.message,'error');}}
-    $('markIssue').addEventListener('click',()=>void markResult(Math.min(source.frame_count-1,Math.floor(position()*source.fps)),'issue'));
+    $('markIssue').addEventListener('click',()=>void markResult(Math.min(source.frame_count-1,Math.floor(s2f(position()))),'issue'));
     $('reviewTrack').addEventListener('change',()=>void loadResultReview());$('stopLoop').addEventListener('click',()=>{loopWindow=null;video.pause();});
     $('clearPredictions').addEventListener('click',async()=>{try{await request(`/jobs/${currentJobId}/prediction-cache`,{method:'DELETE'});notify('本任务预测缓存已清除。');}catch(error){notify(error.message,'error');}});
     async function togglePlay(){if(busy()||seeking)return;if(video.paused){try{await video.play();}catch{notify("浏览器无法播放此视频，可使用目标画面查看。","error");}}else video.pause();}
     $("play").addEventListener("click",togglePlay);$("mute").addEventListener("click",()=>{video.muted=!video.muted;$("mute").textContent=video.muted?"×":"♪";$("mute").setAttribute("aria-label",video.muted?"取消静音":"静音");});
     video.addEventListener("play",()=>{$("play").textContent="Ⅱ";$("play").setAttribute("aria-label","暂停");});video.addEventListener("pause",()=>{$("play").textContent="▶";$("play").setAttribute("aria-label","播放");});
-    video.addEventListener("timeupdate",()=>{updatePlayback();updateOverlayVisibility();if(loopWindow&&view==="clean"&&video.currentTime>=loopWindow[1]/source.fps)video.currentTime=loopWindow[0]/source.fps;scheduleMask();});
+    video.addEventListener("timeupdate",()=>{updatePlayback();updateOverlayVisibility();if(loopWindow&&view==="clean"&&video.currentTime>=f2s(loopWindow[1]))video.currentTime=f2s(loopWindow[0]);scheduleMask();});
     $("seek").addEventListener("change",()=>void setMedia(view,Number($("seek").value)));
     $("viewButtons").addEventListener("click",event=>{const button=event.target.closest('[data-view]');if(button&&!button.disabled)void setMedia(button.dataset.view,position());});
-    document.addEventListener("keydown",event=>{if(event.target.closest("textarea,input,select,button,a,summary,[role=group]"))return;if(event.code==="Space"){event.preventDefault();void togglePlay();}if(["ArrowLeft","ArrowRight"].includes(event.code)){event.preventDefault();void setMedia(view,position()+(event.code==="ArrowRight"?1:-1)/(source?.fps||25));}});
+    document.addEventListener("keydown",event=>{if(event.target.closest("textarea,input,select,button,a,summary,[role=group]"))return;if(event.code==="Space"){event.preventDefault();void togglePlay();}if(["ArrowLeft","ArrowRight"].includes(event.code)){event.preventDefault();void setMedia(view,stepFrom(position(),event.code==="ArrowRight"?1:-1));}});
     window.addEventListener("resize",updateOverlayPositions);window.addEventListener("beforeunload",()=>{if(currentJobId)void fetch(`/jobs/${currentJobId}/playback`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({lease_id:playbackLease,trial_id:null}),keepalive:true});if(localURL)URL.revokeObjectURL(localURL);});
     let dark=storageGet("videowipe.theme")==="dark";function applyTheme(){document.documentElement.dataset.theme=dark?"dark":"light";$("theme").textContent=dark?"浅色":"深色";}$("theme").addEventListener("click",()=>{dark=!dark;applyTheme();storageSet("videowipe.theme",dark?"dark":"light");});applyTheme();renderActions();void restoreJob().catch(error=>notify(error.message,"error")).finally(()=>{if(state==="restoring")state="ready";renderActions();});
 
