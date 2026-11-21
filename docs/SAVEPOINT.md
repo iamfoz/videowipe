@@ -16,7 +16,7 @@ servers updated to 1.24.0).
 Every branch starts from upstream `20872d4` unless marked as stacked. Any
 combination merges without conflicts (66 of 66 pairs checked earlier; the
 three newest branches checked against every other), and with all of them
-merged the suite passes (1,355 tests) and an end-to-end clean of a
+merged the suite passes (1,400 tests, nineteen branches) and an end-to-end clean of a
 constant-rate clip is byte-identical to upstream's output. With
 `fix/output-fidelity` merged, a variable-rate source (the full
 `chinese1.mp4` is one) is deliberately no longer identical: its frames keep
@@ -45,6 +45,7 @@ off the output is byte-identical to upstream's, measured).
 | `feat/inpaint-quality` | `14c6d98` | Q-7, Q-8, Q-9: ground-truth harness and results only (`scripts/inpaint_quality_*.py`, `docs/inpaint-quality-experiments.md`); no `src/` change |
 | `feat/duration-sampling` | `4ab23be` | Q-6: sample count grows with duration for balanced and sensitive (`sampling.py`, one call in `planning.prepare`, `VIDEOWIPE_SAMPLE_INTERVAL`, `VIDEOWIPE_SAMPLE_MEMORY_MB`, `docs/sampling.md`) |
 | `fix/vfr-ui-timing` | `99bf956` | **Stacked on `fix/output-fidelity`.** Web UI and server convert seconds and frames through the source's real frame times on variable-rate sources (`server/frame_map.py`; constant-rate sources unchanged; `VIDEOWIPE_SOURCE_TIMING=off` restores today's arithmetic) |
+| `fix/ocr-crop-budget` | `ec364c2` | **Stacked on `fix/ocr-crop`.** OCR crops kept while sampling are capped (`VIDEOWIPE_OCR_CROP_BUDGET_MB`, default 64); crops needed after the cap are re-read from their own frames in one pass. Recognised text, candidates and baselines identical with real RapidOCR on all three samples |
 | `docs/performance-prd` | this branch | The PRD and this file |
 | `main` | `a708c67` | Upstream plus the Switchyard MCP setup only; no feature branch is merged into it |
 | `chore/switchyard-mcp` | `f1d326d` | Merged to `main`; can be deleted |
@@ -196,6 +197,13 @@ so ffmpeg 9 is verified only on the Mac.
 the page and server's seconds-times-fps put 294 of 591 frames one frame out
 and 516 of 591 three-second trials on a different range; they now use the
 source's frame times. The other two samples are exact and unchanged.
+
+**`fix/ocr-crop-budget`** (stacked on `fix/ocr-crop`): only three crops
+per text-less region are ever read, but every crop was kept. Now at most
+64 MB are kept while sampling (1080p, 900 samples: 237 MB to 64 MB, peak
+RSS 435 to 263 MB); anything needed beyond that is re-read from its own
+frame in a single extra pass. Identical output with real RapidOCR on all
+three samples at the default and at a zero budget.
 
 **Phase 3 is complete.** Not started, and not in Phase 3: the long-term
 half of Q-4, the web UI items (U-1 to U-4), P2-5 and P2-7, the
