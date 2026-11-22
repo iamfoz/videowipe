@@ -119,13 +119,15 @@ def test_collector_is_thread_safe():
     stats = perfstats.PerfStats()
     stats.begin("refine")
 
-    def worker():
+    def worker(index):
         for _ in range(2000):
             stats.add("detect_calls")
             stats.add_many(forward_passes=1, forward_hl=1)
-            stats.mark("recovery_frames", threading.get_ident())
+            # Not threading.get_ident(): a finished thread's id can be given to the
+            # next one, so eight threads need not have eight ids.
+            stats.mark("recovery_frames", index)
 
-    threads = [threading.Thread(target=worker) for _ in range(8)]
+    threads = [threading.Thread(target=worker, args=(index,)) for index in range(8)]
     for thread in threads:
         thread.start()
     for thread in threads:
