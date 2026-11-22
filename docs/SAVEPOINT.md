@@ -34,7 +34,7 @@ off the output is byte-identical to upstream's, measured).
 | `perf/server-exact` | `918bc40` | Thumbnails in one pass, cached mask rendering off the job lock, source hashed once |
 | `perf/plan-masks` | `727893e` | Bisected mask rows, windowed blur behind a self-test |
 | `perf/mps` | `a9413f6` | MPS allocator cleanup; `VIDEOWIPE_PRECISION` (`auto`/`float32`/`float16`), `scripts/compare_clean_outputs.py`, `docs/precision.md` |
-| `perf/instrumentation` | `f805b92` | **Stacked on `perf/refine-exact`.** Split timers, detection counters (`perfstats.py`), `scripts/perf_baseline.py` |
+| `perf/instrumentation` | `cc2eda0` | **Stacked on `perf/refine-exact`.** Split timers, detection counters (`perfstats.py`), `scripts/perf_baseline.py` |
 | `perf/detector-calls` | `1e37cb5` | **Stacked on `perf/instrumentation`.** Band fallback from stored crops (no second decode), recovery pruning |
 | `perf/blend-box` | `4133f14` | **Stacked on `perf/instrumentation`.** Compositing only inside the mask's box |
 | `perf/skip-windows` | `8c451f7` | **Stacked on `perf/blend-box`.** Model windows that cannot reach an emitted pixel are skipped; partial prediction-cache entries; `scripts/skip_windows_estimate.py` |
@@ -48,7 +48,7 @@ off the output is byte-identical to upstream's, measured).
 | `fix/ocr-crop-budget` | `ec364c2` | **Stacked on `fix/ocr-crop`.** OCR crops kept while sampling are capped (`VIDEOWIPE_OCR_CROP_BUDGET_MB`, default 64); crops needed after the cap are re-read from their own frames in one pass. Recognised text, candidates and baselines identical with real RapidOCR on all three samples |
 | `perf/web-ui` | `8ed77d3` | U-1 to U-3: timeline bars rebuilt only when segments change (a wrapper, so `renderTimeline` stays as other branches edit it); mask tint by canvas filter with a self-check and the old loop as fallback; progress stream sends only changes plus a 15 s keep-alive (`docs/web-ui-performance.md`) |
 | `perf/i18n-memo` | `ce45057` | **Stacked on `feat/i18n-english`.** U-4: translation patterns compiled once, results memoised (capped) |
-| `chore/integration` | `52d41b6` | `main` plus every branch above, replayed in dependency order (71 commits, linear); tree identical to merging all 22; 1,414 tests pass; real cleans of `english1` and `chinese1` keep frame counts and copy audio bit for bit. **Candidate for `main`; awaiting the owner's Mac smoke test and explicit go-ahead** |
+| `chore/integration` | `12d3fa2` | `main` plus every branch above, replayed in dependency order (71 commits, linear); tree identical to merging all 22; 1,414 tests pass; real cleans of `english1` and `chinese1` keep frame counts and copy audio bit for bit. Mac smoke test passed (full suite 1,423 after the thread-id test fix, a full clean, the web UI in Safari). **Candidate for `main`; awaiting the owner's explicit go-ahead** |
 | `docs/performance-prd` | this branch | The PRD and this file |
 | `main` | `a708c67` | Upstream plus the Switchyard MCP setup only; no feature branch is merged into it |
 | `chore/switchyard-mcp` | `f1d326d` | Merged to `main`; can be deleted |
