@@ -15,6 +15,7 @@ from pathlib import Path
 import os
 import subprocess
 import tempfile
+import threading
 import time
 
 import cv2
@@ -184,9 +185,11 @@ class _MaskFacts:
         remainder.setflags(write=False)
         pair = (alpha, remainder)
         owner = self._owner
-        if owner is not None and owner.admit(self, alpha.nbytes + remainder.nbytes):
-            self._derived[k] = pair
-            self.derived_bytes += alpha.nbytes + remainder.nbytes
+        if owner is not None:
+            with owner.lock:  # the pipeline overlap composes on another thread
+                if owner.admit(self, alpha.nbytes + remainder.nbytes):
+                    self._derived[k] = pair
+                    self.derived_bytes += alpha.nbytes + remainder.nbytes
         return pair
 
 
@@ -204,11 +207,16 @@ class _MaskCache:
         self.budget = _blend_cache_budget() if budget is None else int(budget)
         self.derived_bytes = 0
         self._entries = {}
+        self.lock = threading.RLock()
 
     def __len__(self):
         return len(self._entries)
 
     def get(self, mask):
+        with self.lock:
+            return self._get(mask)
+
+    def _get(self, mask):
         entry = self._entries.get(id(mask))
         if entry is not None and entry.source is mask:
             self._entries[id(mask)] = self._entries.pop(id(mask))  # most recent
@@ -220,6 +228,10 @@ class _MaskCache:
         return entry
 
     def admit(self, facts, nbytes):
+        with self.lock:
+            return self._admit(facts, nbytes)
+
+    def _admit(self, facts, nbytes):
         while self.derived_bytes + nbytes > self.budget:
             if not self._evict_oldest(keep=facts):
                 return False
@@ -658,6 +670,7 @@ class STTNInpainter:
         # videowipe/timing.py) and its audio, metadata and subtitles (full runs,
         # videowipe/tracks.py). VIDEOWIPE_SOURCE_TIMING=off and
         # VIDEOWIPE_OUTPUT_TRACKS=off give upstream's command.
+        from videowipe import pipeline_overlap
         from videowipe.fidelity import plan_encode
         encode_plan = plan_encode(job)
 
@@ -679,6 +692,7 @@ class STTNInpainter:
             cache = PredictionCache(job.prediction_cache_dir, identity)
         prediction_s = composition_s = 0.0
         output_reader = None
+        overlap = pipeline_overlap.OFF
 
         ffmpeg_cmd = [
             "ffmpeg", "-y",
@@ -777,6 +791,14 @@ class STTNInpainter:
                 and type(output_reader) is _REAL_VIDEO_CAPTURE
                 and not job.dual
             )
+
+            # Optional overlap of decode, compose and write with the model
+            # (VIDEOWIPE_PIPELINE_OVERLAP); ``off`` returns these unchanged.
+            overlap = pipeline_overlap.attach(
+                job, reader, output_reader, _compose_frame, _write_frame,
+                frame_bytes=ori_w * ori_h * 3, available_bytes=_available_memory_bytes(),
+                capture_type=_REAL_VIDEO_CAPTURE)
+            reader, output_reader = overlap.reader, overlap.output_reader
 
             # Backend instances are shared runtime objects; keep inference
             # serialized until the backend declares a thread-safety contract.
@@ -951,14 +973,14 @@ class STTNInpainter:
                                 predictions[k] = comps[k][j]
                         # Soft alpha blend: mask is float32 in [0,1] when
                         # feather_radius > 0, else uint8 in {0,1}.
-                        frame = _compose_frame(
+                        frame = overlap.compose(
                             frame_ori, predictions, mode, facts, upscaler, ori_w,
                             dual=job.dual, own_frame=own_frames,
                             legacy_mask=facts.alpha if job.frame_mask is not None else job.mask,
                         )
                         started_write = clock()
                         blend_s += started_write - started_blend
-                        _write_frame(pipe.stdin, frame)
+                        overlap.write(pipe.stdin, frame)
                         pipe_write_s += clock() - started_write
                         frames_written += 1
 
@@ -969,6 +991,7 @@ class STTNInpainter:
                     elif job.progress is not None:
                         job.progress(min(end_f, last) - first, last - first)
 
+            overlap.finish()
             if job.phase_progress is not None:
                 job.phase_progress("encode", 0, 1, None)
             encoding_started = time.monotonic()
@@ -1005,6 +1028,7 @@ class STTNInpainter:
                     bands_inferred=bands_inferred, windows=windows,
                     windows_skipped=windows_skipped,
                 )
+                job.metrics.update(overlap.metrics())
                 if cache is not None:
                     job.metrics.update(prediction_hits=cache.hits, prediction_misses=cache.misses,
                                        prediction_corrupt=cache.corrupt, prediction_writes=cache.writes)
@@ -1015,6 +1039,7 @@ class STTNInpainter:
             processing_failed = True
             raise
         finally:
+            overlap.abort()
             if output_reader is not None:
                 output_reader.release()
             if not stdin_closed and pipe.stdin is not None:

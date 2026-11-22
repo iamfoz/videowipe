@@ -37,6 +37,9 @@ def video(tmp_path_factory):
 
 @pytest.fixture
 def stub_model(monkeypatch):
+    # These tests check the serial split of the timers; the overlap's own
+    # accounting is tested in test_pipeline_overlap.py.
+    monkeypatch.setenv("VIDEOWIPE_PIPELINE_OVERLAP", "off")
     calls = []
 
     def predict(frames, *args):
