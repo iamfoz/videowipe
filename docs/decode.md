@@ -187,8 +187,9 @@ One line each, then OpenCV decodes as before (`Warning: ...; decoding with OpenC
 
 * the source cannot be probed; its pixel format is not YCbCr (RGB, palette); its matrix
   tag is not BT.601, BT.709 or BT.2020 (smpte240m, fcc, ycgco ...);
-* HDR (PQ or HLG): `source_checks` already warns about it, so `auto` is silent and
-  `ffmpeg` says so; [high-bit-depth.md](high-bit-depth.md) handles it;
+* HDR (PQ or HLG) with `VIDEOWIPE_HIGH_BIT_DEPTH=off`: `source_checks` already warns
+  about it, so `auto` is silent and `ffmpeg` says so. Otherwise the reader decodes it
+  (BT.2020, no tone mapping) for [high-bit-depth.md](high-bit-depth.md);
 * this ffmpeg does not decode known colours as asked (a clip of known YCbCr patches,
   tagged with the *wrong* matrix and range, must come out as the matrix and range given),
   or does not encode with the matching matrix (colour.md's check);
@@ -210,7 +211,8 @@ When the reader starts it says so once per source:
   on the reference machine first.
 * The model sees the reader's frames, so for untagged HD it now works on the true
   colours rather than BT.601-clipped ones.
-* HDR sources, and sources whose matrix tag is not handled, decode as before.
+* HDR sources (with `VIDEOWIPE_HIGH_BIT_DEPTH=off`), and sources whose matrix tag is not
+  handled, decode as before.
 * Hardware decoding and sources whose first video stream is not the one `-map 0:v:0`
   picks: not tested.
 
