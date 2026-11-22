@@ -177,6 +177,7 @@ def evaluate_plan(plan, provisional, truth: dict) -> dict:
     wm_cov = 0
     wm_total = 0
     false_frames = 0
+    false_list: list[int] = []
     no_text_frames = 0
     false_area = 0.0
     allowed = np.zeros((height, width), dtype=bool)
@@ -208,6 +209,7 @@ def evaluate_plan(plan, provisional, truth: dict) -> dict:
             no_text_frames += 1
             if outside.any():
                 false_frames += 1
+                false_list.append(frame)
 
     # Loss attribution per line.
     prov_cov = {}
@@ -216,7 +218,12 @@ def evaluate_plan(plan, provisional, truth: dict) -> dict:
         prov_cov[track.id] = _segment_frames(ptrack.segments, frame_count) if ptrack else np.zeros(frame_count, bool)
 
     result: dict = {"watermark_frame_recall": wm_cov / max(1, wm_total)}
-    for name in ("dialogue", "caption"):
+    # The two built-in tracks always, then any other track the truth file holds
+    # (sparse tracks from ``gen_long_clip.py --sparse``), in name order.
+    track_names = ["dialogue", "caption"] + sorted(
+        {l["track"] for l in lines} - {"dialogue", "caption"}
+    )
+    for name in track_names:
         idx = [i for i, l in enumerate(lines) if l["track"] == name]
         total_frames = sum(interior_len[i] for i in idx)
         cov_frames = sum(covered[i] for i in idx)
@@ -248,6 +255,9 @@ def evaluate_plan(plan, provisional, truth: dict) -> dict:
             else:
                 lost["refine_dropped"] = lost.get("refine_dropped", 0) + 1
         result[name] = {
+            "on_screen_share": sum(
+                int(lines[i]["end_frame"]) - int(lines[i]["first_frame"]) for i in idx
+            ) / max(1, frame_count),
             "lines": len(idx),
             "lines_found": len(found),
             "line_recall": len(found) / max(1, len(idx)),
@@ -260,6 +270,14 @@ def evaluate_plan(plan, provisional, truth: dict) -> dict:
             "lost_by": lost,
         }
     result["false_removal_frames"] = false_frames
+    # The same frames as runs [first, last], to see where a rise comes from.
+    runs: list[list[int]] = []
+    for frame in false_list:
+        if runs and runs[-1][1] == frame - 1:
+            runs[-1][1] = frame
+        else:
+            runs.append([frame, frame])
+    result["false_removal_runs"] = runs
     result["no_text_frames"] = no_text_frames
     result["false_removal_share_of_no_text"] = false_frames / max(1, no_text_frames)
     result["false_removed_area_mean"] = false_area / max(1, frame_count)

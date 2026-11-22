@@ -12,6 +12,15 @@ generated ASS file:
 * ``watermark`` a persistent semi-transparent top-right mark, on for the whole
   clip.
 
+``--sparse NAME:POSITION:SHARE`` (repeatable) adds a track that is on screen a
+chosen share of the time, in bursts of one to three lines of 1-5 s (so 0.05 is
+five per cent of the clip).  ``POSITION`` is ``bottom`` (the dialogue row),
+``aside`` (a cyan row just above it, in the same subtitle band) or ``top``
+(the yellow caption row).  ``--no-dense`` leaves out the built-in dialogue and
+caption tracks, so a sparse track can be measured on its own.  The sparse
+tracks come from their own random streams, so they never change the dialogue
+or caption timeline of a seed.
+
 Everything is derived from ``--seed`` so the same arguments always give the
 same timeline.  Alongside ``<name>.mp4`` the script writes ``<name>.ass`` and
 ``<name>.truth.json``: every line's frame range and glyph rectangle, measured
@@ -72,6 +81,7 @@ ScaledBorderAndShadow: yes
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Dialogue,DejaVu Sans,22,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,1.6,0,2,20,20,24,1
 Style: Caption,DejaVu Sans,20,&H0000E6FF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,1.6,0,8,20,20,30,1
+Style: Aside,DejaVu Sans,20,&H00FFE600,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,1.6,0,2,20,20,62,1
 Style: Mark,DejaVu Sans,16,&H66FFFFFF,&H000000FF,&H66000000,&H00000000,-1,0,0,0,100,100,0,0,1,1.0,0,9,16,16,14,1
 
 [Events]
@@ -179,14 +189,107 @@ def build_timeline(
     }
 
 
-def write_ass(timeline: dict, path: Path) -> None:
+SPARSE_POSITIONS = {"bottom": "Dialogue", "aside": "Aside", "top": "Caption"}
+
+
+def _style_of(timeline: dict, track: str) -> str:
+    if track == "dialogue":
+        return "Dialogue"
+    if track == "caption":
+        return "Caption"
+    return SPARSE_POSITIONS[timeline["sparse_tracks"][track]["position"]]
+
+
+def parse_sparse(spec: str) -> tuple[str, str, float]:
+    """``NAME:POSITION:SHARE`` -> (name, position, share)."""
+    try:
+        name, position, share = spec.split(":")
+        value = float(share)
+    except ValueError as exc:
+        raise ValueError(f"--sparse wants NAME:POSITION:SHARE, got {spec!r}") from exc
+    if not name.isidentifier() or name in ("dialogue", "caption"):
+        raise ValueError(f"bad sparse track name {name!r}")
+    if position not in SPARSE_POSITIONS:
+        raise ValueError(f"position must be one of {sorted(SPARSE_POSITIONS)}, got {position!r}")
+    if not 0.0 < value < 0.9:
+        raise ValueError(f"share must be between 0 and 0.9, got {share!r}")
+    return name, position, value
+
+
+def build_sparse_lines(
+    duration: float, seed: int, name: str, share: float, fps: int,
+) -> list[dict]:
+    """Lines of one sparse track: bursts of 1-3 lines, spread over the clip.
+
+    Lines last 1-5 s, lines in a burst are 0.3-1.0 s apart, and the bursts are
+    separated by random gaps of at least about 3 s.  The track is on screen for
+    ``share`` of the duration to within one line.  Drawn from a stream of its
+    own, so it is deterministic in ``(seed, name)`` and independent of the
+    dialogue and caption draws.
+    """
+    _r1 = Grid(fps)
+    rng = random.Random(f"{seed}:{name}")
+    target = share * duration
+    bursts: list[list[tuple[float, float]]] = []
+    on = 0.0
+    while on < target - 0.5:
+        burst: list[tuple[float, float]] = []
+        cursor = 0.0
+        for _ in range(rng.randint(1, 3)):
+            length = _r1(rng.uniform(1.0, 5.0))
+            if on + length > target + 2.0 and (burst or bursts):
+                break
+            burst.append((cursor, cursor + length))
+            on += length
+            cursor = _r1(cursor + length + rng.uniform(0.3, 1.0))
+        if not burst:
+            break
+        bursts.append(burst)
+    spans = [burst[-1][1] for burst in bursts]
+    free = duration - 2.0 - sum(spans)
+    if free <= 0:
+        raise ValueError(f"share {share} does not fit in {duration} s")
+    minimum = min(3.0, 0.5 * free / (len(bursts) + 1))
+    weights = [rng.uniform(0.2, 1.8) for _ in range(len(bursts) + 1)]
+    spare = free - minimum * len(weights)
+    lines: list[dict] = []
+    cursor = 1.0
+    for index, burst in enumerate(bursts):
+        cursor += minimum + spare * weights[index] / sum(weights)
+        for start, end in burst:
+            first, last = _r1(cursor + start), _r1(cursor + end)
+            if last > duration - 0.5:
+                break
+            lines.append({
+                "track": name, "start": first, "end": last, "text": _text(rng, 2, 6),
+            })
+        cursor += spans[index]
+    return lines
+
+
+def add_sparse_tracks(timeline: dict, specs: list[tuple[str, str, float]], fps: int) -> dict:
+    """Add the sparse tracks to a timeline and renumber the lines."""
+    duration, seed = timeline["duration"], timeline["seed"]
+    timeline["sparse_tracks"] = {}
+    for name, position, share in specs:
+        timeline["sparse_tracks"][name] = {"position": position, "share": share}
+        timeline["lines"].extend(build_sparse_lines(duration, seed, name, share, fps))
+    timeline["lines"].sort(key=lambda x: (x["start"], x["track"]))
+    for index, line in enumerate(timeline["lines"]):
+        line["id"] = f"L{index:04d}"
+    return timeline
+
+
+def write_ass(timeline: dict, path: Path, tracks: set[str] | None = None) -> None:
     rows = [ASS_HEADER.format(w=BG_W, h=BG_H)]
     rows.append(
         f"Dialogue: 0,{_ass_time(0)},{_ass_time(timeline['duration'] + 1.0)},"
         "Mark,,0,0,0,,@videowipe.test\n"
     )
     for line in timeline["lines"]:
-        style = "Dialogue" if line["track"] == "dialogue" else "Caption"
+        if tracks is not None and line["track"] not in tracks:
+            continue
+        style = _style_of(timeline, line["track"])
         rows.append(
             f"Dialogue: 0,{_ass_time(line['start'])},{_ass_time(line['end'])},"
             f"{style},,0,0,0,,{line['text']}\n"
@@ -245,8 +348,17 @@ def _glyph_rect(gray: np.ndarray, region: np.ndarray, floor: int, pad: int):
     ]
 
 
-def measure_rects(text_video: Path, timeline: dict, fps: int) -> dict:
-    """Glyph rectangle of every line, from a middle frame of the text-only render."""
+def measure_rects(
+    text_video: Path, timeline: dict, fps: int, tracks: set[str] | None = None,
+) -> dict:
+    """Glyph rectangle of every line, from a middle frame of the text-only render.
+
+    Dialogue and caption lines are found in their own regions of the full
+    render.  ``tracks`` limits the lines measured: a sparse track is measured
+    in a render that holds only that track (its region is then the whole frame
+    below the watermark corner), so tracks that share the subtitle band cannot
+    be confused with one another.
+    """
     pad = 3
     cap = cv2.VideoCapture(str(text_video))
     if not cap.isOpened():
@@ -266,6 +378,10 @@ def measure_rects(text_video: Path, timeline: dict, fps: int) -> dict:
 
     wanted: dict[int, list[dict]] = {}
     for line in timeline["lines"]:
+        if tracks is not None and line["track"] not in tracks:
+            continue
+        if tracks is None and line["track"] not in ("dialogue", "caption"):
+            continue
         first_frame = int(round(line["start"] * fps))
         last_frame = int(round(line["end"] * fps))
         line["first_frame"], line["end_frame"] = first_frame, min(last_frame, total)
@@ -288,7 +404,10 @@ def measure_rects(text_video: Path, timeline: dict, fps: int) -> dict:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         for line in wanted[target]:
             region = np.zeros_like(gray, dtype=bool)
-            if line["track"] == "dialogue":
+            if line["track"] not in ("dialogue", "caption"):
+                region[:, :] = True
+                region[: int(h * 0.15) + pad, mark[0] - 2 * pad:] = False
+            elif line["track"] == "dialogue":
                 region[int(h * 0.55):, :] = True
             else:
                 region[: int(h * 0.45), : max(1, mark[0] - 2 * pad)] = True
@@ -311,6 +430,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pause-share", type=float, default=0.30)
     parser.add_argument("--two-line-share", type=float, default=0.0,
                         help="Share of long dialogue lines set on two rows")
+    parser.add_argument("--sparse", action="append", default=[], metavar="NAME:POSITION:SHARE",
+                        help="Add a track on screen SHARE of the time (position: bottom, aside, top)")
+    parser.add_argument("--no-dense", action="store_true",
+                        help="Leave out the built-in dialogue and caption tracks")
     parser.add_argument("--crf", type=int, default=24)
     args = parser.parse_args(argv)
 
@@ -326,16 +449,35 @@ def main(argv: list[str] | None = None) -> int:
     base = out / args.name
     duration = float(args.duration)
 
+    try:
+        sparse = [parse_sparse(spec) for spec in args.sparse]
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    if len({name for name, _, _ in sparse}) != len(sparse):
+        print("sparse track names must be distinct", file=sys.stderr)
+        return 2
     timeline = build_timeline(
         duration, args.seed, pause_share=args.pause_share, fps=args.fps,
         two_line_share=args.two_line_share,
     )
+    if args.no_dense:
+        timeline["lines"] = []
+    if sparse:
+        add_sparse_tracks(timeline, sparse, args.fps)
     ass = base.with_suffix(".ass")
     write_ass(timeline, ass)
     text_only = base.with_suffix(".text.mp4")
     render_text_only(ass, text_only, duration, args.fps, width, height)
     timeline = measure_rects(text_only, timeline, args.fps)
     text_only.unlink()
+    for name, _position, _share in sparse:
+        track_ass = base.with_suffix(f".{name}.ass")
+        write_ass(timeline, track_ass, tracks={name})
+        render_text_only(track_ass, text_only, duration, args.fps, width, height)
+        measure_rects(text_only, timeline, args.fps, tracks={name})
+        text_only.unlink()
+        track_ass.unlink()
     video = base.with_suffix(".mp4")
     render_video(ass, video, duration, args.fps, width, height, args.seed, args.crf)
 
@@ -357,6 +499,9 @@ def main(argv: list[str] | None = None) -> int:
         f"({share(dialogue):.0%} of time), {len(caption)} caption lines "
         f"({share(caption):.0%}), no-text stretch {timeline['no_text_stretch']}"
     )
+    for name, position, _wanted in sparse:
+        mine = [l for l in timeline["lines"] if l["track"] == name]
+        print(f"  sparse {name} ({position}): {len(mine)} lines ({share(mine):.1%} of time)")
     return 0
 
 
