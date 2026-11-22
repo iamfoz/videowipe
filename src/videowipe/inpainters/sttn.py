@@ -22,9 +22,10 @@ import cv2
 import numpy as np
 
 from videowipe.backends import load_backend
+from videowipe.decode import CAPTURE_TYPES, open_capture
 from videowipe.inpainters.base import InpaintJob, InpaintOutcome
 
-_VIDEO_CAPTURE_TYPE = cv2.VideoCapture
+_VIDEO_CAPTURE_TYPE = CAPTURE_TYPES
 
 
 def get_ref_index(neighbor_ids, length, ref_length):
@@ -737,7 +738,7 @@ class STTNInpainter:
         processing_failed = False
         try:
             if job.video_path and isinstance(reader, _VIDEO_CAPTURE_TYPE):
-                candidate_reader = cv2.VideoCapture(job.video_path)
+                candidate_reader = open_capture(job.video_path, like=reader)
                 if candidate_reader.isOpened():
                     output_reader = candidate_reader
                 else:

@@ -43,6 +43,9 @@ def default_mode(monkeypatch):
     monkeypatch.delenv("VIDEOWIPE_COLOUR", raising=False)
     monkeypatch.setenv("VIDEOWIPE_OUTPUT_TRACKS", "off")
     monkeypatch.delenv("VIDEOWIPE_SOURCE_TIMING", raising=False)
+    # These tests are about colour.py's own path, which measures what OpenCV does;
+    # tests/test_decode.py covers the ffmpeg reader and how colour.py follows it.
+    monkeypatch.setenv("VIDEOWIPE_DECODE", "opencv")
     colour.decoder_conversion.cache_clear()
 
 

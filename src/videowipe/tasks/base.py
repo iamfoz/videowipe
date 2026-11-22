@@ -5,12 +5,13 @@ import time
 import cv2
 
 from videowipe.backends import load_backend
+from videowipe.decode import open_capture
 from videowipe.video import frame_count
 
 
 def read_frame_info(video_path: str):
     """Read video metadata. Returns (VideoCapture, frame_info dict)."""
-    reader = cv2.VideoCapture(video_path)
+    reader = open_capture(video_path)
     if not reader.isOpened():
         raise ValueError(f"Cannot open video: {video_path}")
     info = {

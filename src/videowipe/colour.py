@@ -352,6 +352,8 @@ class OutputColour:
     options: tuple = ()
     second: tuple = ()
     description: str = ""
+    #: false when the source has no tags to keep and only the conversion changes
+    tagged: bool = True
 
     @property
     def active(self) -> bool:
@@ -398,7 +400,10 @@ class OutputColour:
                   "command; the output carries none.")
             self.options = self.second = ()
             return cmd
-        print(f"Keeping the source's colour tags ({self.description}).")
+        if self.tagged:
+            print(f"Keeping the source's colour tags ({self.description}).")
+        else:
+            print(f"Encoding with the matrix the frames were decoded with ({self.description}).")
         return rewritten
 
 
@@ -406,6 +411,49 @@ def _describe(matrix: str, rng: str, source: SourceColour) -> str:
     names = {"bt601": "BT.601", "bt709": "BT.709", "bt2020": "BT.2020"}
     return f"{names[matrix]}, {'full' if rng == 'pc' else 'limited'} range; the source is " \
            f"{source.space or 'untagged'}"
+
+
+def _output_plan(source: SourceColour, matrix: str, rng: str, tagged: bool):
+    """The ``(options, second, description, tags)`` for frames whose BGR values are
+    the source's true colours under *matrix* and *rng*, or ``None`` when this
+    ffmpeg does not apply them as asked. With *tagged* false (a source with no tags
+    at all) nothing is written to the file and only the conversion is chosen."""
+    tags = {"-colorspace": source.space, "-color_primaries": source.primaries,
+            "-color_trc": source.transfer, "-color_range": rng if tagged else None}
+    tags = {flag: value for flag, value in tags.items() if value is not None}
+    options = _labelled(_scale_filters(matrix, rng), tags.get("-colorspace"),
+                        tags.get("-color_primaries"), tags.get("-color_trc"),
+                        tags.get("-color_range"))
+    if options and not check_encode(options, matrix, rng, tags):
+        return None
+    # The HEVC copy is limited range by design. Its conversion is changed only
+    # where BGR is already the picture's true colours (the decoder read the tags
+    # as a player would), so that converting once, to limited range, is right.
+    second = ()
+    if tagged and source.space is not None:
+        second = tuple(["-vf", f"scale=out_color_matrix={matrix}:out_range=tv,"
+                        + _frame_tags(source.space, source.primaries, source.transfer, "tv")]
+                       + _tag_options(source.space, source.primaries, source.transfer, None))
+    elif not tagged and (matrix, "tv") != DEFAULT_CONVERSION:
+        second = ("-vf", f"scale=out_color_matrix={matrix}:out_range=tv")
+    return tuple(options), second, _describe(matrix, rng, source)
+
+
+@functools.lru_cache(maxsize=32)
+def _reader_plan(source: SourceColour, matrix: str, rng: str):
+    return _output_plan(source, matrix, rng, source.tagged)
+
+
+def reader_encode_plan(source: SourceColour, matrix: str, rng: str) -> OutputColour | None:
+    """What the encode does for frames that :mod:`videowipe.decode`'s ffmpeg reader
+    converted to BGR with *matrix* and *rng* (so BGR is the true picture), or
+    ``None`` when this ffmpeg cannot apply it. Inactive (upstream's command) when
+    the source has no tags and the matrix is ffmpeg's own default."""
+    plan = _reader_plan(source, matrix, rng)
+    if plan is None:
+        return None
+    options, second, description = plan
+    return OutputColour(options, second, description, tagged=source.tagged)
 
 
 def plan_output_colour(job) -> OutputColour:
@@ -418,6 +466,18 @@ def plan_output_colour(job) -> OutputColour:
     if source is None:
         print("Warning: could not read the source's colour tags; the output carries none.")
         return OutputColour()
+    from videowipe import decode  # lazy: decode imports this module
+
+    by_reader = decode.reader_conversion(getattr(job, "reader", None))
+    if by_reader is not None:
+        # The frames were decoded by ffmpeg with a matrix and range we know, so the
+        # encode needs no measuring: it is the inverse of that.
+        plan = reader_encode_plan(source, *by_reader)
+        if plan is None:
+            print("Warning: this ffmpeg did not apply the matrix the frames were decoded "
+                  "with; the output's colours are converted with ffmpeg's default.")
+            return OutputColour()
+        return plan
     if source.hdr or not source.tagged:
         return OutputColour()  # HDR is not handled; no tags means nothing to keep
     if source.space is not None and source.space not in TAG_MATRIX:
@@ -436,22 +496,14 @@ def plan_output_colour(job) -> OutputColour:
         print("Warning: this OpenCV read the source's colour range differently from its tag; "
               "the output carries no colour tags.")
         return OutputColour()
-    tags = {"-colorspace": source.space, "-color_primaries": source.primaries,
-            "-color_trc": source.transfer, "-color_range": rng}
-    tags = {flag: value for flag, value in tags.items() if value is not None}
-    options = _labelled(_scale_filters(matrix, rng), tags.get("-colorspace"),
-                        tags.get("-color_primaries"), tags.get("-color_trc"), rng)
-    if not check_encode(options, matrix, rng, tags):
+    plan = _output_plan(source, matrix, rng, True)
+    if plan is None:
         print("Warning: this ffmpeg did not apply the source's colour tags with a matching "
               "conversion; the output carries none.")
         return OutputColour()
-    # The HEVC copy is limited range by design. Its conversion is changed only
-    # where BGR is already the picture's true colours (the decoder read the tags
-    # as a player would), so that converting once, to limited range, is right.
-    reads_as = (TAG_MATRIX.get(source.space), source.range or "tv")
-    second = ()
-    if source.space is not None and (matrix, rng) == reads_as:
-        second = tuple(["-vf", f"scale=out_color_matrix={matrix}:out_range=tv,"
-                        + _frame_tags(source.space, source.primaries, source.transfer, "tv")]
-                       + _tag_options(source.space, source.primaries, source.transfer, None))
-    return OutputColour(tuple(options), second, _describe(matrix, rng, source))
+    options, second, description = plan
+    # The HEVC copy's conversion changes only where the decoder read the tags as a
+    # player would (see _output_plan).
+    if (matrix, rng) != (TAG_MATRIX.get(source.space), source.range or "tv"):
+        second = ()
+    return OutputColour(options, second, description)

@@ -594,6 +594,21 @@ def probe_passthrough(workdir):
 # ---------------------------------------------------------------------------------
 
 
+def install_sim601():
+    """Make the pipeline read every source as a BT.601-only decoder would (the
+    reference Mac's OpenCV 4.14.0: it ignores BT.709 and BT.2020 matrix tags and
+    honours the range tag), with the ffmpeg reader standing in for it."""
+    from videowipe import colour, decode
+    from videowipe.inpainters import sttn
+    from videowipe.tasks import base
+
+    def open_capture(path, like=None):
+        source = colour.probe_source(path)
+        return decode.FfmpegFrameReader(path, "bt601", (source and source.range) or "tv")
+
+    base.open_capture = sttn.open_capture = open_capture
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--classes", help="comma-separated class names (default: all)")
@@ -603,11 +618,18 @@ def main(argv=None):
     parser.add_argument("--probe", choices=["decode", "encode", "passthrough", "table", "all"],
                         default="all")
     parser.add_argument("--colour", help="set VIDEOWIPE_COLOUR for the run (e.g. off, auto)")
+    parser.add_argument("--decode", help="set VIDEOWIPE_DECODE for the run (opencv, auto, ffmpeg), "
+                        "or 'sim601': a decoder that reads every source as BT.601 with the "
+                        "source's range, like the reference Mac's OpenCV")
     parser.add_argument("--json", help="write the results to this file")
     parser.add_argument("--keep", help="keep the generated files in this directory")
     args = parser.parse_args(argv)
     if args.colour:
         os.environ["VIDEOWIPE_COLOUR"] = args.colour
+    if args.decode == "sim601":
+        install_sim601()
+    elif args.decode:
+        os.environ["VIDEOWIPE_DECODE"] = args.decode
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         sys.exit("ffmpeg and ffprobe are required")
     import cv2
@@ -616,7 +638,8 @@ def main(argv=None):
               if line.strip().startswith(("avcodec:", "swscale:", "FFMPEG:"))]
     print(f"OpenCV {cv2.__version__} ({'; '.join(builds)})")
     print(f"System {first}")
-    print(f"VIDEOWIPE_COLOUR={os.environ.get('VIDEOWIPE_COLOUR', '(unset)')}")
+    print(f"VIDEOWIPE_COLOUR={os.environ.get('VIDEOWIPE_COLOUR', '(unset)')} "
+          f"VIDEOWIPE_DECODE={args.decode or os.environ.get('VIDEOWIPE_DECODE', '(unset)')}")
     wanted = set(args.classes.split(",")) if args.classes else None
     results = {}
     holder = tempfile.TemporaryDirectory() if not args.keep else None
