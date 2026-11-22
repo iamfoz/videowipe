@@ -450,6 +450,7 @@ def run_variant(clip: dict, variant: str, work: Path, save_frames=(4, 12, 20, 28
     video = str(clip["dir"] / "burned.mp4")
     reader = cv2.VideoCapture(video)
     started = time.monotonic()
+    cpu_started = time.process_time()
     metrics: dict = {}
     try:
         outcome = painter.inpaint(InpaintJob(
@@ -474,6 +475,7 @@ def run_variant(clip: dict, variant: str, work: Path, save_frames=(4, 12, 20, 28
     crop_glyph = [clip[f"glyph{alphas.line(i)}"] for i in range(FRAMES)]
     scores = M.score_clip(captured, truth, crop_alpha, crop_glyph)
     scores["seconds"] = round(elapsed, 1)
+    scores["cpu_s"] = round(time.process_time() - cpu_started, 1)  # steadier than wall time on a shared machine
     # Model time per model frame: every inferred band runs one 25-frame segment.
     model_frames = max(1, metrics.get("bands_inferred", 0) * 25)
     scores["model_s"] = round(metrics.get("model_s", 0.0), 3)
@@ -592,7 +594,8 @@ def main():
         if args.command == "run":
             for v in variants:
                 scores = run_variant(clip, v, args.work)
-                print(name, v, json.dumps({k: round(x, 4) for k, x in scores.items()}), flush=True)
+                print(name, v, json.dumps({k: round(x, 4) if isinstance(x, float) else x
+                                          for k, x in scores.items() if k != "crops"}), flush=True)
         else:
             dest = args.work / "results" / f"{name}_{'_'.join(variants)}.png"
             print(contact_sheet(clip, variants, args.work, dest))

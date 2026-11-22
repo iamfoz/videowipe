@@ -11,7 +11,10 @@ import json
 import statistics
 from pathlib import Path
 
-GROUPS = {"480p": ("e1", "e2", "e3"), "1080p": ("c1", "c2", "o1", "o2"), "4K": ("k1", "k2")}
+GROUPS = {"480p": ("e1", "e2", "e3"), "1080p": ("c1", "c2", "o1", "o2"), "4K": ("k1", "k2"),
+          # Cases added for the model crop (docs/mask-crop.md)
+          "moving box": ("m1", "m2"), "scrolling text": ("d1",), "two bands": ("u1",),
+          "wide text": ("w1", "w2")}
 # metric -> (label, higher is better?)
 METRICS = {
     "core_psnr": ("core PSNR dB", True),
@@ -27,6 +30,7 @@ METRICS = {
     "ghost_corr": ("ghost corr.", False),
     "flicker_extra": ("extra flicker", False),
     "flicker_out": ("flicker (out)", None),
+    "model_ms_per_frame": ("model ms / frame", False),
 }
 
 
