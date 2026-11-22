@@ -41,7 +41,7 @@ from typing import Callable, Iterable, Iterator, List, Literal, Protocol, runtim
 import cv2
 import numpy as np
 
-from videowipe import memory, perfstats, recovery_reuse
+from videowipe import memory, perfstats, recovery_reuse, sparse_tracks
 from videowipe.errors import ProcessingCancelledError
 
 logger = logging.getLogger(__name__)
@@ -95,6 +95,12 @@ class CleanCandidate:
     # deliberately absent from to_dict()/WipePlan v1 serialization.
     temporal_sample_indices: list[int] = field(default_factory=list, repr=False)
     detector_backed: bool = field(default=False, repr=False)
+    # When set, only a detector box it accepts counts as this candidate being
+    # on a frame (see :mod:`videowipe.sparse_tracks`); ``None`` means any box
+    # that overlaps ``bbox``.
+    evidence_filter: Callable[[tuple[int, int, int, int]], bool] | None = field(
+        default=None, repr=False,
+    )
 
     def to_dict(self) -> dict:
         """Return a JSON-safe representation without the binary mask."""
@@ -1340,6 +1346,7 @@ def detect_clean_candidates(
     subtitle_fallback: str = "off",
     recognizer: object | None = None,
     check_cancelled: Callable[[], None] | None = None,
+    sparse_tracks_on: bool | None = None,
 ) -> CleanDetectionResult:
     """Detect removable clean targets from sampled video frames.
 
@@ -1552,6 +1559,12 @@ def detect_clean_candidates(
                 )
             )
 
+        if sparse_tracks_on if sparse_tracks_on is not None else sparse_tracks.enabled():
+            candidates.extend(sparse_tracks.sparse_candidates(
+                all_frame_boxes, (h, w), candidates, len(candidates) + 1,
+                appearance_thumbnails,
+            ))
+
     if wants_band_fallback:
         perfstats.begin("band_fallback")
         try:
@@ -1714,6 +1727,14 @@ def _rects_agree(
 ) -> bool:
     """Require majority geometric agreement, not incidental touching pixels."""
     return _iou_bbox(rect1, rect2) >= 0.5
+
+
+def _box_passes_filter(
+    box: TextBox, candidate: CleanCandidate, width: int, height: int,
+) -> bool:
+    """A candidate's own evidence rule, if it has one (sparse tracks do)."""
+    rule = getattr(candidate, "evidence_filter", None)
+    return rule is None or bool(rule(_bbox(box.points, width, height)))
 
 
 def _needs_contrast_recovery(
@@ -1974,6 +1995,9 @@ def refine_temporal_presence(
                         _box_overlaps_bbox(
                             box, candidate.bbox,
                             frame.shape[1], frame.shape[0],
+                        )
+                        and _box_passes_filter(
+                            box, candidate, frame.shape[1], frame.shape[0],
                         )
                         for box in boxes
                     ):

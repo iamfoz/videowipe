@@ -305,6 +305,9 @@ def prepare(
         subtitle_fallback=params["subtitle_fallback"],
         recognizer=recognizer_builder(ocr),
         check_cancelled=check_cancelled,
+        # ``fast`` does not refine, so a sparse track's coarse windows would
+        # be removed whole; leave it to the modes that check every frame.
+        sparse_tracks_on=False if detect_mode == "fast" else None,
     )
     selected = select_clean_candidates(
         result.candidates, targets=effective_targets, intent=intent,
@@ -524,6 +527,10 @@ def _add_spatial_segments(plan, result, selected_ids=None, *, video_path=None, c
     """Reuse dense detections; absent local evidence never means a full-band wipe."""
     eligible = {c.id for c in result.candidates
                 if c.type == "subtitle" and getattr(c, "detector_backed", False)}
+    # A candidate with its own evidence rule (a sparse track) counts only the
+    # boxes the rule accepts, here as in refinement; the rest count any box.
+    rules = {c.id: c.evidence_filter for c in result.candidates
+             if getattr(c, "evidence_filter", None) is not None}
     h, w = result.frame_shape
     evidence = getattr(result, "sampled_frame_boxes", {})
     failed = getattr(result, "failed_frame_indices", set())
@@ -650,8 +657,10 @@ def _add_spatial_segments(plan, result, selected_ids=None, *, video_path=None, c
     def _local_positive(index: int, track) -> bool:
         boxes = evidence.get(index) or []
         bx1, by1, bx2, by2 = track.bbox
+        rule = rules.get(track.id)
         return any(
             bx1 <= (cx1 + cx2) / 2 <= bx2 and by1 <= (cy1 + cy2) / 2 <= by2
+            and (rule is None or rule((cx1, cy1, cx2, cy2)))
             for box in boxes
             for cx1, cy1, cx2, cy2 in [_bbox(box.points, frame_w, frame_h)]
         )
@@ -683,6 +692,7 @@ def _add_spatial_segments(plan, result, selected_ids=None, *, video_path=None, c
                 or (selected_ids is not None and track.id not in selected_ids)):
             continue
         x1, y1, x2, y2 = track.bbox
+        rule = rules.get(track.id)
         local_frames = {}
         track_segs = track.segments
         for index, boxes in evidence:
@@ -693,7 +703,8 @@ def _add_spatial_segments(plan, result, selected_ids=None, *, video_path=None, c
             local = []
             for box in boxes:
                 bx1, by1, bx2, by2 = _bbox(box.points, w, h)
-                if x1 <= (bx1+bx2)/2 <= x2 and y1 <= (by1+by2)/2 <= y2:
+                if x1 <= (bx1+bx2)/2 <= x2 and y1 <= (by1+by2)/2 <= y2 and (
+                        rule is None or rule((bx1, by1, bx2, by2))):
                     local.append((bx1, by1, bx2, by2))
             if not local:
                 continue
