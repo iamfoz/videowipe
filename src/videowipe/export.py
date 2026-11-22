@@ -205,6 +205,13 @@ def hevc_output_args(source_path: str, mp4_path: str, height: int) -> list[str]:
 
     Appended after the H.264 output of a command whose input 0 is the cleaned
     raw video and input 1 the original file (for its audio)."""
+    # a source above 8 bits keeps its bit depth in this output (videowipe.highbit),
+    # which is then written whichever codec was chosen
+    from videowipe.highbit import output_args as high_bit_args
+
+    kept = high_bit_args(source_path, mp4_path, height)
+    if kept is not None:
+        return kept
     if current_codec() != "h265":
         return []
     preset = choose_preset(height)

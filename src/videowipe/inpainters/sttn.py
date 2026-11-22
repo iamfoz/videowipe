@@ -23,6 +23,7 @@ import numpy as np
 
 from videowipe.backends import load_backend
 from videowipe.decode import CAPTURE_TYPES, open_capture
+from videowipe.highbit import merge as high_bit_merge
 from videowipe.inpainters.base import InpaintJob, InpaintOutcome
 
 _VIDEO_CAPTURE_TYPE = CAPTURE_TYPES
@@ -979,6 +980,7 @@ class STTNInpainter:
                             dual=job.dual, own_frame=own_frames,
                             legacy_mask=facts.alpha if job.frame_mask is not None else job.mask,
                         )
+                        frame = high_bit_merge(frame, frame_ori)
                         started_write = clock()
                         blend_s += started_write - started_blend
                         overlap.write(pipe.stdin, frame)

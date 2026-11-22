@@ -32,7 +32,8 @@ OpenCV on any source.
 ``opencv``
     Upstream's decoder.
 
-Wherever the ffmpeg reader cannot be used (HDR, a matrix this code does not
+Wherever the ffmpeg reader cannot be used (HDR when ``VIDEOWIPE_HIGH_BIT_DEPTH`` is
+``off``, a matrix this code does not
 convert, a pixel format that is not YCbCr, an ffmpeg that does not decode known
 colours as asked, frames that do not match OpenCV's, ``VIDEOWIPE_COLOUR=off``)
 the job decodes with OpenCV and one line says so. :mod:`videowipe.colour` reads
@@ -55,7 +56,7 @@ import weakref
 import cv2
 import numpy as np
 
-from videowipe import colour
+from videowipe import colour, highbit
 from videowipe.colour import TAG_MATRIX
 from videowipe.source_checks import bit_depth
 from videowipe.timing import _run
@@ -101,10 +102,12 @@ def source_conversion(source) -> tuple[str, str] | None:
 _MATRIX_TAG = {"bt601": "smpte170m", "bt709": "bt709", "bt2020": "bt2020nc"}
 
 
-def reader_command(path: str, matrix: str, rng: str, sync=("-fps_mode", "passthrough")) -> list[str]:
+def reader_command(path: str, matrix: str, rng: str, sync=("-fps_mode", "passthrough"),
+                   pix_fmt: str = "bgr24") -> list[str]:
     """The ffmpeg command that writes the first video stream of *path* to stdout as
-    ``bgr24``, converted with *matrix* and *rng* (which override the stream's own
-    tags), one frame per decoded frame.
+    ``bgr24`` (or *pix_fmt*, ``bgr48le`` for the 16-bit frames of
+    :mod:`videowipe.highbit`), converted with *matrix* and *rng* (which override the
+    stream's own tags), one frame per decoded frame.
 
     The frames are relabelled with *matrix* and *rng* (``setparams``) before they are
     scaled, as well as passing them to the scaler (``in_color_matrix``,
@@ -115,8 +118,8 @@ def reader_command(path: str, matrix: str, rng: str, sync=("-fps_mode", "passthr
     labels = f"setparams=colorspace={_MATRIX_TAG[matrix]}:range={rng}"
     return ["ffmpeg", "-nostdin", "-v", "error", "-nostats", "-i", path,
             "-map", "0:v:0", "-an", "-sn", "-dn", *sync,
-            "-vf", f"{labels},scale=in_color_matrix={matrix}:in_range={rng},format=bgr24",
-            "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
+            "-vf", f"{labels},scale=in_color_matrix={matrix}:in_range={rng},format={pix_fmt}",
+            "-f", "rawvideo", "-pix_fmt", pix_fmt, "-"]
 
 
 _announced: set[str] = set()
@@ -153,9 +156,12 @@ class FfmpegFrameReader:
     #: reader from a test double
 
     def __init__(self, path: str, matrix: str, rng: str, sync=("-fps_mode", "passthrough"),
-                 note: str = ""):
+                 note: str = "", bits: int = 8):
         self._capture = cv2.VideoCapture(path)
         self.path, self.matrix, self.range, self.sync, self.note = path, matrix, rng, sync, note
+        #: 16 for the 16-bit frames (``bgr48le``) of videowipe.highbit: ``read`` then
+        #: returns the 8-bit rounding with the 16-bit frame attached
+        self.bits = bits
         self._proc = None
         self._lock = threading.Lock()
         self._shape = None
@@ -170,10 +176,12 @@ class FfmpegFrameReader:
         if width <= 0 or height <= 0:
             return False
         self._shape = (height, width, 3)
+        self._dtype = np.dtype("<u2") if self.bits == 16 else np.dtype(np.uint8)
         self._stderr = tempfile.TemporaryFile()
         try:
             self._proc = subprocess.Popen(
-                reader_command(self.path, self.matrix, self.range, self.sync),
+                reader_command(self.path, self.matrix, self.range, self.sync,
+                               "bgr48le" if self.bits == 16 else "bgr24"),
                 stdout=subprocess.PIPE, stderr=self._stderr, bufsize=0)
         except OSError:
             self._proc = None
@@ -209,10 +217,12 @@ class FfmpegFrameReader:
         with self._lock:
             if self._shape is None and not self._start():
                 return False, None
-            frame = np.empty(self._shape, np.uint8)
+            frame = np.empty(self._shape, self._dtype)
             if not self._fill(frame):
                 return False, None
             self.frames_delivered += 1
+            if self.bits == 16:
+                return True, highbit.make_high_frame(frame)
             return True, frame
 
     def grab(self) -> bool:
@@ -220,7 +230,7 @@ class FfmpegFrameReader:
             if self._shape is None and not self._start():
                 return False
             if self._buffer is None:
-                self._buffer = np.empty(self._shape, np.uint8)
+                self._buffer = np.empty(self._shape, self._dtype)
             if not self._fill(self._buffer):
                 self._grabbed = False
                 return False
@@ -231,6 +241,8 @@ class FfmpegFrameReader:
     def retrieve(self, image=None, flag=0):
         if not getattr(self, "_grabbed", False):
             return False, None
+        if self.bits == 16:
+            return True, highbit.make_high_frame(self._buffer.copy())
         return True, self._buffer.copy()
 
     def isOpened(self) -> bool:
@@ -391,7 +403,9 @@ def _decide(path: str, size: int, mtime_ns: int, mode: str, colour_mode: str):
     source = colour.probe_source(path)
     if source is None:
         return refuse("could not read the source's colour description")
-    if source.hdr:
+    if source.hdr and highbit.mode() == "off":
+        # HDR is decoded (with its BT.2020 matrix) for videowipe.highbit's sake; with
+        # VIDEOWIPE_HIGH_BIT_DEPTH=off it is as upstream's, which warns about it
         return refuse("the source is HDR, which the ffmpeg reader does not handle", quiet=not forced)
     if not source.pix_fmt.startswith(_YCBCR_PREFIXES):
         return refuse(f"the source's pixel format ({source.pix_fmt or 'unknown'}) is not YCbCr",
@@ -456,7 +470,10 @@ def open_capture(video_path: str, like=None):
     """
     if like is not None:
         if isinstance(like, FfmpegFrameReader):
-            reader = FfmpegFrameReader(video_path, like.matrix, like.range, like.sync)
+            plan = highbit.current(video_path)
+            # 16-bit frames only where the ffmpeg command was rewritten to take them
+            bits = 16 if plan is not None and plan.applied else 8
+            reader = FfmpegFrameReader(video_path, like.matrix, like.range, like.sync, bits=bits)
             if reader.isOpened():
                 return reader
             reader.release()

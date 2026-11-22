@@ -540,6 +540,7 @@ def test_what_it_cannot_read_falls_back_with_one_line(tmp_path, monkeypatch, cap
                                                       options, expected):
     path = make(tmp_path, name, "1280x720", pix_fmt, *options)
     monkeypatch.setenv("VIDEOWIPE_DECODE", "ffmpeg")
+    monkeypatch.setenv("VIDEOWIPE_HIGH_BIT_DEPTH", "off")  # with it on, HDR is decoded (high-bit-depth.md)
     assert decode.decide(path) is None
     lines = [l for l in capsys.readouterr().out.splitlines() if l]
     assert len(lines) == 1 and lines[0].startswith("Warning:") and expected in lines[0]

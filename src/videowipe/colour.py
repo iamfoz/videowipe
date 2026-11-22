@@ -424,13 +424,17 @@ _UNLABELLED = ("format=yuv420p,setparams=colorspace=unknown:color_primaries=unkn
                "color_trc=unknown:range=unknown")
 
 
-def _output_plan(source: SourceColour, matrix: str, rng: str, tagged: bool):
-    """The ``(options, second, description, tags)`` for frames whose BGR values are
-    the source's true colours under *matrix* and *rng*, or ``None`` when this
-    ffmpeg does not apply them as asked. With *tagged* false (a source with no tags
-    at all) nothing is written to the file and only the conversion is chosen."""
+def _output_plan(source: SourceColour, matrix: str, rng: str, tagged: bool, write_tags: bool = True):
+    """The ``(options, second, description)`` for frames whose BGR values are the
+    source's true colours under *matrix* and *rng*, or ``None`` when this ffmpeg does
+    not apply them as asked. With *tagged* false (a source with no tags at all) or
+    *write_tags* false (an 8-bit copy of an HDR source: its tags would claim an HDR
+    8-bit stream) nothing is written to the file and only the conversion is chosen."""
+    tagged = tagged and write_tags
     tags = {"-colorspace": source.space, "-color_primaries": source.primaries,
             "-color_trc": source.transfer, "-color_range": rng if tagged else None}
+    if not write_tags:
+        tags = {}
     tags = {flag: value for flag, value in tags.items() if value is not None}
     options = _labelled(_scale_filters(matrix, rng), tags.get("-colorspace"),
                         tags.get("-color_primaries"), tags.get("-color_trc"),
@@ -457,7 +461,7 @@ def _output_plan(source: SourceColour, matrix: str, rng: str, tagged: bool):
 
 @functools.lru_cache(maxsize=32)
 def _reader_plan(source: SourceColour, matrix: str, rng: str):
-    return _output_plan(source, matrix, rng, source.tagged)
+    return _output_plan(source, matrix, rng, source.tagged, not source.hdr)
 
 
 def reader_encode_plan(source: SourceColour, matrix: str, rng: str) -> OutputColour | None:
@@ -469,7 +473,7 @@ def reader_encode_plan(source: SourceColour, matrix: str, rng: str) -> OutputCol
     if plan is None:
         return None
     options, second, description = plan
-    return OutputColour(options, second, description, tagged=source.tagged)
+    return OutputColour(options, second, description, tagged=source.tagged and not source.hdr)
 
 
 def plan_output_colour(job) -> OutputColour:
@@ -489,6 +493,12 @@ def plan_output_colour(job) -> OutputColour:
         # The frames were decoded by ffmpeg with a matrix and range we know, so the
         # encode needs no measuring: it is the inverse of that.
         plan = reader_encode_plan(source, *by_reader)
+        if plan is not None:
+            from videowipe import highbit  # lazy: highbit imports this module
+
+            kept = highbit.current(path)
+            if kept is not None and kept.active:
+                plan.second = ()  # the 10-bit output has its own options (highbit.py)
         if plan is None:
             print("Warning: this ffmpeg did not apply the matrix the frames were decoded "
                   "with; the output's colours are converted with ffmpeg's default.")
