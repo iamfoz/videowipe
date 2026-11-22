@@ -194,7 +194,9 @@ a third of the time, with 300 or more it essentially never is. The rule does
 not change the threshold itself, so a track below it is still never a
 candidate. In the clips the sparse caption track (8-14 % of the time) formed no
 candidate with any sample count (0 of 5, 11, 28 and 50 lines, in every
-configuration); that is a separate limit of the frequency map, not of sampling.
+configuration); that is a separate limit of the frequency map, not of sampling
+(see [sparse-tracks.md](sparse-tracks.md), which finds those tracks by another
+route).
 
 ### Memory and time
 
@@ -308,4 +310,6 @@ PYTHONPATH=src python scripts/eval_sampling.py clips/c10.mp4 --mode balanced \
   threshold only on the shared bottom row) and the line was only half covered
   however it was sampled. Orthogonal to sampling; not changed here.
 * The 0.40 / 0.50 / 0.30 thresholds are unchanged; a subtitle track on screen
-  less than that share of the time is still never a candidate.
+  less than that share of the time is still never a candidate of the frequency
+  map. [sparse-tracks.md](sparse-tracks.md) adds a second route that admits such
+  tracks on recurrence.
