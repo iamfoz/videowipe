@@ -48,9 +48,9 @@ off the output is byte-identical to upstream's, measured).
 | `fix/ocr-crop-budget` | `ec364c2` | **Stacked on `fix/ocr-crop`.** OCR crops kept while sampling are capped (`VIDEOWIPE_OCR_CROP_BUDGET_MB`, default 64); crops needed after the cap are re-read from their own frames in one pass. Recognised text, candidates and baselines identical with real RapidOCR on all three samples |
 | `perf/web-ui` | `8ed77d3` | U-1 to U-3: timeline bars rebuilt only when segments change (a wrapper, so `renderTimeline` stays as other branches edit it); mask tint by canvas filter with a self-check and the old loop as fallback; progress stream sends only changes plus a 15 s keep-alive (`docs/web-ui-performance.md`) |
 | `perf/i18n-memo` | `ce45057` | **Stacked on `feat/i18n-english`.** U-4: translation patterns compiled once, results memoised (capped) |
-| `chore/integration` | `12d3fa2` | `main` plus every branch above, replayed in dependency order (71 commits, linear); tree identical to merging all 22; 1,414 tests pass; real cleans of `english1` and `chinese1` keep frame counts and copy audio bit for bit. Mac smoke test passed (full suite 1,423 after the thread-id test fix, a full clean, the web UI in Safari). **Candidate for `main`; awaiting the owner's explicit go-ahead** |
+| `chore/integration` | `12d3fa2` | `main` plus every branch above, replayed in dependency order (71 commits, linear); tree identical to merging all 22; 1,414 tests pass; real cleans of `english1` and `chinese1` keep frame counts and copy audio bit for bit. Mac smoke test passed (full suite 1,423 after the thread-id test fix, a full clean, the web UI in Safari). **`main` fast-forwarded to it on the owner's instruction** (docs not included) |
 | `docs/performance-prd` | this branch | The PRD and this file |
-| `main` | `a708c67` | Upstream plus the Switchyard MCP setup only; no feature branch is merged into it |
+| `main` | `12d3fa2` | Upstream, the Switchyard MCP setup and every fork branch (same as `chore/integration`); the PRD and SAVEPOINT stay on `docs/performance-prd` |
 | `chore/switchyard-mcp` | `f1d326d` | Merged to `main`; can be deleted |
 | `chore/switchyard-mcp-1.24` | `a708c67` | Merged to `main` (fast-forward); can be deleted |
 | `iamfoz/beautiful-ramanujan-cw1ggy` | `f9b21f3` | Stale early branch; the owner should delete it (a cloud session cannot) |
