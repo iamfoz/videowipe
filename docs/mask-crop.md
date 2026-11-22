@@ -166,8 +166,8 @@ alternating) gives 5.43 s against 5.48 s of CPU time per frame (ratio 1.01) and 
 wall time. The model time per frame is unchanged. Composing a cropped frame is no slower (`blend_s` over the
 50 frames: 0.04 to 0.68 s with the band, 0.04 to 0.33 s with the crop).
 
-**Contact sheets** (truth, input, current, crop; frames 4, 28 and 45) are in
-`/tmp/claude-0/-home-user-videowipe/47ee2fe6-7bba-547a-befe-0fe44987a6b7/scratchpad/mask-crop/sheets/`.
+**Contact sheets** (truth, input, current, crop; frames 4, 28 and 45) are made by
+`scripts/inpaint_quality_report.py` from the harness's runs; they are not kept in the repository.
 The five most telling:
 
 1. `mask_crop_c1.png`: the biggest 1080p gain (+3.00 dB); on frame 4 the crop restores the edge of the
