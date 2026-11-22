@@ -243,6 +243,24 @@ full-range sources stay full range. Step 3 (audio, sync, seeking) and the
 web UI looked right in QuickTime and Safari. No long real video was
 available, so the sampling evidence stays synthetic.
 
+**Unscheduled items, all built (2026-11-22), on branches from `main` `12d3fa2`,
+combined as `chore/integration` (16 commits, tree identical to merging all
+five; 1,673 tests pass):**
+
+| Branch | What | Default | Evidence | Owner's part |
+|---|---|---|---|---|
+| `feat/sparse-tracks` `e3d4433` | Tracks on screen under 40% of the time are admitted on recurring evidence (`VIDEOWIPE_SPARSE_TRACKS`) | on | 0 to 609 of 609 sparse lines on 12 synthetic clips; false removals unchanged; three samples' plans byte-identical; both baselines unchanged (re-run by me on the final commit) | agree default on |
+| `perf/overlap` `78a4689` | Reader and writer threads around the STTN loop (`VIDEOWIPE_PIPELINE_OVERLAP`, depth `VIDEOWIPE_PIPELINE_DEPTH`) | auto (3+ CPUs) | byte-identical output, incl. VFR, trials, HEVC; no gain measurable on this CPU; 18-31% upper bound in an accelerator simulation; +100-400 MB | Mac timing decides the default |
+| `fix/decode-colour` `e74882d` | ffmpeg frame reader with the right matrix where OpenCV is wrong (`VIDEOWIPE_DECODE`) | auto | untagged HD worst dE 17.6 to 1.96; Mac-style BT.709 17.6 to 1.96; frames identical in order and count to OpenCV on all samples and generated edge cases; real-model clean of `chinese1` complete (591 frames, audio identical) | Mac checks; agree colours change on the Mac |
+| `feat/high-bit-depth` `9333a28` (on `fix/decode-colour`) | 10-bit HEVC `.mkv` keeping depth, tags and HDR10 metadata for sources above 8 bits (`VIDEOWIPE_HIGH_BIT_DEPTH`) | auto | 10-bit ramp rms 7.0 to 0.86; HDR tags and mastering data kept; 8-bit sources byte-identical | HDR display check; opt-in or automatic |
+| `feat/mask-crop` `809cf74` | Model input cropped around the text (`VIDEOWIPE_MODEL_CROP`) | off | +2.3 dB at 1080p (4/4), +3.9 dB at 4K (2/2), better or equal on 14/14; seam error slightly worse on 9/14, faint texture in smooth areas | visual A/B decides the default |
+
+Fixes made in review: the high-bit merge moved inside the compose function
+(it broke with the overlap's writer thread); the crop's import moved so it
+merges with the decode branch; a scratch path removed from `docs/mask-crop.md`.
+An earlier real-model run that ended at 49 frames was the machine's
+out-of-memory killer, not a bug (kernel log; re-run completed).
+
 **Phase 3 is complete.** Not started, and not in Phase 3: the long-term
 half of Q-4, the web UI items (U-1 to U-4), P2-5 and P2-7, the
 constant-rate seconds-to-frames arithmetic in the UI and server found
