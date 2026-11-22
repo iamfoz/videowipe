@@ -488,6 +488,16 @@ def _compose_frame(frame_ori, predictions, modes, facts, upscaler, ori_w, *,
     return frame
 
 
+_compose_8_bit_frame = _compose_frame
+
+
+def _compose_frame(frame_ori, *args, **kwargs):
+    """:func:`_compose_8_bit_frame`, then the changed pixels carried into the source's
+    16-bit frame when it has one (:mod:`videowipe.highbit`); otherwise unchanged.
+    Done here, not at the call site, so it happens wherever frames are composed."""
+    return high_bit_merge(_compose_8_bit_frame(frame_ori, *args, **kwargs), frame_ori)
+
+
 def _write_frame(stream, frame):
     """Write a frame's bytes without an intermediate ``tobytes()`` copy."""
     if frame.flags.c_contiguous and frame.size:
@@ -980,7 +990,6 @@ class STTNInpainter:
                             dual=job.dual, own_frame=own_frames,
                             legacy_mask=facts.alpha if job.frame_mask is not None else job.mask,
                         )
-                        frame = high_bit_merge(frame, frame_ori)
                         started_write = clock()
                         blend_s += started_write - started_blend
                         overlap.write(pipe.stdin, frame)
