@@ -94,6 +94,10 @@ saturated colours are clipped on decode (up to 39 code values of G lost on the s
 Mid-saturation real content is unaffected (38.5 dB, the same as the floor). The
 output reads as BT.709 exactly as the source does, so tagging it would add nothing;
 fixing the clipping would need a different decoder path.
+That decoder path now exists: [decode.md](decode.md) (`VIDEOWIPE_DECODE`). Where it is
+used, the matrix and range the encode inverts are the reader's own rather than a
+measured OpenCV's, untagged HD is encoded with BT.709 (still untagged), and the
+BT.2020 class below is corrected too.
 
 Other OpenCV builds: an OpenCV that ignores the tags and always converts with
 BT.601 limited range was not available to measure here. The change measures what the
@@ -192,8 +196,9 @@ earlier command (six source classes compared).
   only in the container is assumed to be decoded the same way.
 * Chroma stays 4:2:0 (upstream's `-pix_fmt yuv420p`): 4:2:2 and 4:4:4 sources lose
   chroma resolution as before (PSNR in the table).
-* BT.2020 with 2020 primaries and transfer is not corrected (see above), and untagged
-  sources are left as they are.
+* BT.2020 with 2020 primaries and transfer is not corrected by the OpenCV path (see
+  above; the ffmpeg reader of decode.md corrects it), and untagged sources are left
+  as they are unless that reader decodes them.
 * The model sees the BGR frames OpenCV produced; for a source that OpenCV decodes
   "wrongly" (untagged HD) it works on those colours, as before.
 
