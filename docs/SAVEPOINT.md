@@ -41,7 +41,7 @@ off the output is byte-identical to upstream's, measured).
 | `perf/recovery-reuse` | `fa4503c` | **Stacked on `perf/detector-calls`.** Per-run memo for repeated contrast-recovery calls; `scripts/recovery_reuse_probe.py` |
 | `fix/output-fidelity` | `1457ea9` | Q-1: source timestamps kept for variable-rate video (`timing.py`, `VIDEOWIPE_SOURCE_TIMING`, `docs/source-timing.md`). Q-2: audio copied, metadata and text subtitles kept (`tracks.py`, `fidelity.py`, `VIDEOWIPE_OUTPUT_TRACKS`, `docs/output-tracks.md`). Q-4: warning for sources above 8 bits or HDR (`source_checks.py`). Q-10: ProPainter adapter encodes at the real frame rate |
 | `fix/ocr-crop` | `faf4746` | Q-5: OCR reads each box's own frame, not the first sampled frame (`detect.py`) |
-| `fix/colour-tags` | `b2d15a0` | **Stacked on `fix/output-fidelity`.** Q-3: output carries the source's colour tags with a matching conversion (`colour.py`, `VIDEOWIPE_COLOUR`, `scripts/colour_roundtrip.py`, `docs/colour.md`) |
+| `fix/colour-tags` | `8b6b677` | **Stacked on `fix/output-fidelity`.** Q-3: output carries the source's colour tags with a matching conversion (`colour.py`, `VIDEOWIPE_COLOUR`, `scripts/colour_roundtrip.py`, `docs/colour.md`) |
 | `feat/inpaint-quality` | `14c6d98` | Q-7, Q-8, Q-9: ground-truth harness and results only (`scripts/inpaint_quality_*.py`, `docs/inpaint-quality-experiments.md`); no `src/` change |
 | `feat/duration-sampling` | `4ab23be` | Q-6: sample count grows with duration for balanced and sensitive (`sampling.py`, one call in `planning.prepare`, `VIDEOWIPE_SAMPLE_INTERVAL`, `VIDEOWIPE_SAMPLE_MEMORY_MB`, `docs/sampling.md`) |
 | `fix/vfr-ui-timing` | `99bf956` | **Stacked on `fix/output-fidelity`.** Web UI and server convert seconds and frames through the source's real frame times on variable-rate sources (`server/frame_map.py`; constant-rate sources unchanged; `VIDEOWIPE_SOURCE_TIMING=off` restores today's arithmetic) |
@@ -194,6 +194,18 @@ frames with `setparams` (`fix/colour-tags` `b2d15a0`; byte-identical on
 end trim (up to one audio frame at the very end, on 6.1.1 too); documented
 in `docs/output-tracks.md`. This container cannot fetch an ffmpeg 9 build,
 so ffmpeg 9 is verified only on the Mac.
+
+**Q-3 on the reference Mac.** Its OpenCV (4.14.0, avcodec 61.19) decodes
+every source with BT.601, ignoring BT.709 and BT.2020 matrix tags (it honours
+the full-range tag). So there the cleaned output keeps upstream's pixels and
+now carries the source's tags; saturated colours of BT.709 sources are clipped
+on decode exactly as upstream clips them (up to 38 code values of green), which
+only a decode-side change could fix. Two bugs found by the Mac run and fixed:
+frames must be converted to yuv420p before `setparams` labels them (labelling
+BGR frames makes ffmpeg convert with the label's matrix, on 6.1.1 as on 9), and
+the round-trip tests now hold a misreading decoder to upstream's result. The
+Mac's ffmpeg 9 also drops `-color_primaries`/`-color_trc` given only as output
+options, so test files made by hand that way carry only the matrix tag.
 
 **`fix/vfr-ui-timing`** (stacked on `fix/output-fidelity`): on `chinese1.mp4`
 the page and server's seconds-times-fps put 294 of 591 frames one frame out
