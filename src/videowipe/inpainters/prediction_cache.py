@@ -27,8 +27,12 @@ class PredictionCache:
         self.identity = identity
         self.hits = self.misses = self.corrupt = self.writes = 0
 
-    def key(self, first, last, top, bottom):
+    def key(self, first, last, top, bottom, crop=None):
         payload = dict(self.identity, frames=[first, last], crop=[top, bottom])
+        if crop is not None:
+            # The model saw a box inside the band (left, top, right, bottom), not
+            # the whole band, so an entry for the band must never answer for it.
+            payload["model_crop"] = [1, *(int(v) for v in crop)]
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
     def read(self, key, count, need=None):

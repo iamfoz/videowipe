@@ -25,6 +25,7 @@ from videowipe.backends import load_backend
 from videowipe.decode import CAPTURE_TYPES, open_capture
 from videowipe.highbit import merge as high_bit_merge
 from videowipe.inpainters.base import InpaintJob, InpaintOutcome
+from videowipe.inpainters import mask_crop
 
 _VIDEO_CAPTURE_TYPE = CAPTURE_TYPES
 
@@ -385,6 +386,8 @@ class _BandUpscaler:
         """Resized prediction over ``box`` (band-relative), channels reversed
         and converted to float32 exactly as ``cvtColor(BGR2RGB)`` +
         ``astype(float32)`` would."""
+        if isinstance(pred, mask_crop.CroppedPrediction):
+            return pred.region(self, box)
         by0, by1, x0, x1 = box
         window = None
         if self._windowed and pred.dtype == np.uint8 and pred.ndim == 3:
@@ -438,7 +441,7 @@ def _compose_legacy(frame_ori, predictions, modes, mask, ori_w, dual):
     for k in range(len(modes)):
         if k in predictions:
             mode_height = modes[k][1] - modes[k][0]
-            comp = cv2.resize(predictions[k], (ori_w, mode_height))
+            comp = mask_crop.legacy_resize(predictions[k], ori_w, mode_height, cv2.resize)
             comp = cv2.cvtColor(
                 np.array(comp).astype(np.uint8), cv2.COLOR_BGR2RGB
             ).astype(np.float32)
@@ -795,6 +798,8 @@ class STTNInpainter:
             mask_cache = _MaskCache(mode)
             upscaler = _BandUpscaler(ori_w)
             static_facts = None
+            cropper = (mask_crop.SegmentCropper(mode, ori_w, ori_h, job, mask_cache, _MaskFacts)
+                       if mask_crop.crop_mode() == "auto" else None)
             # A frame this loop decoded itself can be edited in place: every
             # read() of a real capture returns a new array and nothing else
             # keeps the frame. Anything else is copied before it is changed.
@@ -856,6 +861,7 @@ class STTNInpainter:
                         mask_eval_s += clock() - started_mask
                     if not skip_windows:
                         wanted = {k: range(segment_len) for k in active_modes}
+                    crops = cropper.plan(start_f, end_f, active_modes, segment_masks) if cropper else {}
 
                     prediction_started = time.monotonic()
                     comps = {}
@@ -863,7 +869,7 @@ class STTNInpainter:
                     if cache is not None:
                         started_cache = clock()
                         for k in active_modes:
-                            keys[k] = cache.key(start_f, end_f, *mode[k])
+                            keys[k] = cache.key(start_f, end_f, *mode[k], crop=crops.get(k))
                             cached = cache.read(keys[k], segment_len, need=wanted[k])
                             if cached is not None:
                                 comps[k] = cached
@@ -908,7 +914,7 @@ class STTNInpainter:
                         for k in missing_modes:
                             from_h, to_h = mode[k]
                             frames[k].append(cv2.resize(
-                                image[from_h:to_h], (w, h),
+                                mask_crop.model_input(image, from_h, to_h, crops.get(k)), (w, h),
                                 interpolation=cv2.INTER_LINEAR,
                             ).astype(np.float32))
                         resize_s += clock() - started_resize
@@ -982,7 +988,7 @@ class STTNInpainter:
                         predictions = {}
                         for k in range(len(mode)):
                             if comps.get(k) and j < len(comps[k]) and comps[k][j] is not None:
-                                predictions[k] = comps[k][j]
+                                predictions[k] = mask_crop.tag(comps[k][j], crops.get(k), mode[k][0])
                         # Soft alpha blend: mask is float32 in [0,1] when
                         # feather_radius > 0, else uint8 in {0,1}.
                         frame = overlap.compose(
