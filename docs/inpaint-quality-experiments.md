@@ -6,6 +6,9 @@ neutral or worse on the objective metrics, so no switch was added. Q-9(b) (a cro
 around the mask instead of a full-width band) is the one clear gain; it is
 prototyped in scratch code only, as asked, and described under "Q-9(b)" below.
 
+Update: the crop has since been built behind `VIDEOWIPE_MODEL_CROP=off|auto` (default `off`) and
+measured on more cases; see `docs/mask-crop.md`.
+
 Everything below was produced by the scripts in `scripts/`
 (`inpaint_quality_harness.py`, `inpaint_quality_metrics.py`,
 `inpaint_quality_report.py`, `inpaint_quality_crop_prototype.py`) against the real
