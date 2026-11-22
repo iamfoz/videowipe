@@ -48,6 +48,7 @@ off the output is byte-identical to upstream's, measured).
 | `fix/ocr-crop-budget` | `ec364c2` | **Stacked on `fix/ocr-crop`.** OCR crops kept while sampling are capped (`VIDEOWIPE_OCR_CROP_BUDGET_MB`, default 64); crops needed after the cap are re-read from their own frames in one pass. Recognised text, candidates and baselines identical with real RapidOCR on all three samples |
 | `perf/web-ui` | `8ed77d3` | U-1 to U-3: timeline bars rebuilt only when segments change (a wrapper, so `renderTimeline` stays as other branches edit it); mask tint by canvas filter with a self-check and the old loop as fallback; progress stream sends only changes plus a 15 s keep-alive (`docs/web-ui-performance.md`) |
 | `perf/i18n-memo` | `ce45057` | **Stacked on `feat/i18n-english`.** U-4: translation patterns compiled once, results memoised (capped) |
+| `chore/integration` | `52d41b6` | `main` plus every branch above, replayed in dependency order (71 commits, linear); tree identical to merging all 22; 1,414 tests pass; real cleans of `english1` and `chinese1` keep frame counts and copy audio bit for bit. **Candidate for `main`; awaiting the owner's Mac smoke test and explicit go-ahead** |
 | `docs/performance-prd` | this branch | The PRD and this file |
 | `main` | `a708c67` | Upstream plus the Switchyard MCP setup only; no feature branch is merged into it |
 | `chore/switchyard-mcp` | `f1d326d` | Merged to `main`; can be deleted |
@@ -228,6 +229,11 @@ to upstream's in 34 recorded steps (re-checked after the wrapper rework).
 Not done: the canvas timeline (measured; would change the picture), the
 `busyHint` writes (they would conflict with `fix/progress-display`), Firefox
 and Safari, GPU rasterisation.
+
+**Owner's decisions (Mac checks done):** sampling interval stays 1 s;
+full-range sources stay full range. Step 3 (audio, sync, seeking) and the
+web UI looked right in QuickTime and Safari. No long real video was
+available, so the sampling evidence stays synthetic.
 
 **Phase 3 is complete.** Not started, and not in Phase 3: the long-term
 half of Q-4, the web UI items (U-1 to U-4), P2-5 and P2-7, the
