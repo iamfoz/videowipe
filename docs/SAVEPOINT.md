@@ -13,6 +13,14 @@ servers updated to 1.24.0).
 
 ## Branches
 
+**As of 2026-11-22 the remote holds only `main` and `docs/performance-prd`.**
+Every work branch below was replayed into `main` (`12d3fa2`, a linear
+fast-forward from `a708c67`) and then deleted on GitHub by the owner. The
+table is kept as a record of what each branch held and its last commit, from
+which any of them can be recreated (`git branch <name> <hash>`) while GitHub
+still has the objects. New work branches start from `main`, not from
+upstream `20872d4`.
+
 Every branch starts from upstream `20872d4` unless marked as stacked. Any
 combination merges without conflicts (66 of 66 pairs checked earlier; the
 three newest branches checked against every other), and with all of them
