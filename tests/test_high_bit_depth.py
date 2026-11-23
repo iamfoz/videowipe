@@ -531,7 +531,10 @@ def test_the_hevc_copy_keeps_the_bit_depth_the_tags_and_the_hdr_metadata(kind, c
     # 10 bits: the ramps keep nearly all their levels, with errors of about a code
     # 640 levels in the source and about 217 in today's 8-bit output; the encoder decides
     # how many survive (601 with libx265 here, 549 on the reference Mac for SDR and HLG)
-    assert m["ramp"]["levels"] >= 500 and m["ramp"]["rms"] < 1.5 and m["ramp"]["longest_run"] <= 6
+    # libx265 is near-lossless here (rms 0.86); a hardware encoder is not (hevc_videotoolbox on
+    # the reference Mac: rms 2.48 of 1023), and today's 8-bit output is 7 or more out.
+    rms_limit = 1.5 if any("libx265" in line for line in log) else 4.0
+    assert m["ramp"]["levels"] >= 500 and m["ramp"]["rms"] < rms_limit and m["ramp"]["longest_run"] <= 6
     assert m["shallow"]["levels"] >= 60 and m["shallow"]["rms"] < 1.5
     assert m["chroma"]["cb_levels"] > 150 and m["chroma"]["rms"] < 1.5
     # the MP4 review copy is 8-bit (and says so), as ever
