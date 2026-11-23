@@ -345,8 +345,8 @@ def test_the_known_colours_check_allows_for_a_noisy_conversion(monkeypatch):
     for matrix, rng in (("bt601", "tv"), ("bt709", "tv"), ("bt709", "pc"), ("bt2020", "tv")):
         assert decode._reader_decodes_known_colours(matrix, rng, sync), (matrix, rng)
     real = decode.reader_command
-    monkeypatch.setattr(decode, "reader_command", lambda path, matrix, rng, sync=sync: real(
-        path, "bt601" if matrix == "bt709" else "bt709", rng, sync))  # converts with the wrong one
+    monkeypatch.setattr(decode, "reader_command", lambda path, matrix, rng, sync=sync, *rest: real(
+        path, "bt601" if matrix == "bt709" else "bt709", rng, sync, *rest))  # converts with the wrong one
     assert not decode._reader_decodes_known_colours("bt709", "tv", sync)
 
 
@@ -437,12 +437,12 @@ def test_the_start_up_check_passes_whichever_of_the_label_and_the_options_wins(t
     assert decode._reader_decodes_known_colours("bt709", "tv", sync)
     real = decode.reader_command
     # a reader that follows the frames' own (here wrong) labels: the check must refuse it
-    monkeypatch.setattr(decode, "reader_command", lambda path, matrix, rng, sync=sync: with_filters(
-        real(path, matrix, rng, sync), lambda f: f == "format=bgr24"))
+    monkeypatch.setattr(decode, "reader_command", lambda path, matrix, rng, sync=sync, *rest: with_filters(
+        real(path, matrix, rng, sync, *rest), lambda f: f == "format=bgr24"))
     assert not decode._reader_decodes_known_colours("bt709", "tv", sync)
     # one that follows the frames, but relabels them first, passes
-    monkeypatch.setattr(decode, "reader_command", lambda path, matrix, rng, sync=sync: with_filters(
-        real(path, matrix, rng, sync), lambda f: not f.startswith("scale=")))
+    monkeypatch.setattr(decode, "reader_command", lambda path, matrix, rng, sync=sync, *rest: with_filters(
+        real(path, matrix, rng, sync, *rest), lambda f: not f.startswith("scale=")))
     assert decode._reader_decodes_known_colours("bt709", "tv", sync)
 
 
