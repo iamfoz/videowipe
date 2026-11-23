@@ -255,6 +255,17 @@ five; 1,673 tests pass):**
 | `feat/high-bit-depth` `9333a28` (on `fix/decode-colour`) | 10-bit HEVC `.mkv` keeping depth, tags and HDR10 metadata for sources above 8 bits (`VIDEOWIPE_HIGH_BIT_DEPTH`) | auto | 10-bit ramp rms 7.0 to 0.86; HDR tags and mastering data kept; 8-bit sources byte-identical | HDR display check; opt-in or automatic |
 | `feat/mask-crop` `809cf74` | Model input cropped around the text (`VIDEOWIPE_MODEL_CROP`) | off | +2.3 dB at 1080p (4/4), +3.9 dB at 4K (2/2), better or equal on 14/14; seam error slightly worse on 9/14, faint texture in smooth areas | visual A/B decides the default |
 
+**Mac results (2026-11-22, ffmpeg 9.1):** overlap measured on the reference Mac,
+`chinese1` inpainting 76.2 to 72.3 s (-5%, three runs within 0.7 s each way),
+`english1` 67.8 to 67.0 s (-1%); output byte-identical on and off, so it stays
+`auto`. The decode reader fell back to OpenCV on every clean ("did not decode
+known colours as asked") and 38 decode/high-bit tests failed: ffmpeg 9 follows
+frame colour labels over the scaler's `in_*` options, makes tagged clips by
+converting, and its swscale differs from OpenCV's bundled one by up to 3 code
+values. Being fixed. Owner's decisions: sparse tracks on; colour-correct decoding
+on; 10-bit copy automatic for HDR (PQ/HLG) sources and opt-in
+(`VIDEOWIPE_HIGH_BIT_DEPTH=on`) for SDR above 8 bits; overlap on; mask crop off.
+
 Fixes made in review: the high-bit merge moved inside the compose function
 (it broke with the overlap's writer thread); the crop's import moved so it
 merges with the decode branch; a scratch path removed from `docs/mask-crop.md`.
