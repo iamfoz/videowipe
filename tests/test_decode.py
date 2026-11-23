@@ -584,6 +584,9 @@ def test_the_older_vsync_spelling_is_tried_when_fps_mode_is_refused(tmp_path, mo
         return sync[0] == "-vsync"
 
     monkeypatch.setattr(decode, "_reader_decodes_known_colours", fake)
+    # The comparison with OpenCV would run the real reader with -vsync, which newer
+    # ffmpeg (9.x) no longer has; this test is only about the order of the spellings.
+    monkeypatch.setattr(decode, "_matches_opencv", lambda *args: None)
     assert decode.decide(hd)[2] == ("-vsync", "passthrough")
     assert [t[0] for t in tried] == ["-fps_mode", "-vsync"]
 
