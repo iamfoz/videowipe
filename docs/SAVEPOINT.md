@@ -13,7 +13,7 @@ servers updated to 1.24.0).
 
 ## Branches
 
-**As of 2026-11-22 the remote holds only `main` and `docs/performance-prd`.**
+**As of 2026-11-23 the remote holds only `main` (`0311ba8`) and `docs/performance-prd`.**
 Every work branch below was replayed into `main` (`12d3fa2`, a linear
 fast-forward from `a708c67`) and then deleted on GitHub by the owner. The
 table is kept as a record of what each branch held and its last commit, from
@@ -275,9 +275,9 @@ with tags and HDR10 metadata, SDR above 8 bits only with `on`. ffmpeg 9.1
 findings fixed on the way: a clip labelled full range cannot be read as limited
 range (the start-up check no longer asks for it); the scale filter labels what
 it converts (labels reset for untagged outputs); `-vsync` is gone. The owner
-saw no visible colour difference between the readers on `chinese1`. **The owner
-approved moving `main` to `0311ba8`; the push from this session was refused by
-its permission check, so the owner runs it (see the hand-over message).**
+saw no visible colour difference between the readers on `chinese1`. **`main` is now `0311ba8`** (fast-forwarded by
+the owner on 2026-11-23; this session's permission check refuses pushes to
+`main`). The five work branches and `chore/integration` are deleted.
 
 Fixes made in review: the high-bit merge moved inside the compose function
 (it broke with the overlap's writer thread); the crop's import moved so it
