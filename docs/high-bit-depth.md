@@ -37,9 +37,38 @@ is not carried at all.
 
 ## What it does
 
-`VIDEOWIPE_HIGH_BIT_DEPTH=auto` (default; `off` is upstream's behaviour exactly), for a
-source above 8 bits that the ffmpeg reader decodes (all of them in `auto`, HDR included
-now: BT.2020 matrix, no tone mapping):
+`VIDEOWIPE_HIGH_BIT_DEPTH` chooses which sources get this:
+
+| value | sources |
+|---|---|
+| `auto` (default) | **HDR sources**: a transfer of PQ (`smpte2084`) or HLG (`arib-std-b67`) in the stream's tags |
+| `on` | **every source above 8 bits**, SDR (10-bit BT.709) included |
+| `off` | none: upstream's behaviour exactly |
+
+HDR is automatic because its 8-bit copy is the PQ or HLG signal viewed as SDR, untagged
+(wrong colours, no way to fix them in an 8-bit file). An SDR source above 8 bits is
+opt-in: its 8-bit output is a faithful picture whose gradients may band, and the copy
+costs an extra HEVC encode, so whoever wants it asks (`source_checks` says so in its one
+line: `Set VIDEOWIPE_HIGH_BIT_DEPTH=on to also write a 10-bit HEVC copy that keeps it`).
+An SDR source in `auto` is run exactly as it is with `off` (still read by the ffmpeg
+reader, decode.md; no second output, no line from this module).
+
+**What counts as HDR.** The stream's `color_transfer` is `smpte2084` or `arib-std-b67`
+(the check `source_checks` and `colour.SourceColour.hdr` already use). Not detected:
+
+* a source with **HDR10 mastering metadata but no transfer tag**. The metadata says
+  which display the picture was graded on, not which transfer it uses (it can sit on HLG or on
+  SDR masters too), so calling it PQ would write `smpte2084` on a file
+  whose source never said so. It is treated as SDR and, in `auto`, one line says it
+  carries HDR10 metadata but no transfer tag and that `on` writes a copy tagged as the
+  source is (so the copy is as untagged as the source, with its metadata);
+* a transfer that is carried only in the bitstream (or on frames) and not in the
+  stream's tags: only the stream's tags are read, as `source_checks` does;
+* Dolby Vision streams whose stream tags say neither PQ nor HLG (the base layer of
+  some profiles is tagged otherwise or not at all).
+
+For a source it applies to, that the ffmpeg reader decodes (HDR included now: BT.2020
+matrix, no tone mapping):
 
 1. The model works on 8 bits as before: the first reader (model input) is the 8-bit
    ffmpeg reader of decode.md. It was trained on 8-bit pictures and the region it
@@ -72,14 +101,15 @@ colour); the command is rewritten to read `bgr48le` and a line says so:
 A source of 8 bits or less never takes this path: `plan_high_bit_depth` returns an
 inactive plan without a line, no command is rewritten, the reader yields plain frames,
 `merge` returns its argument, and `export.hevc_output_args` is what it was.
-`tests/test_high_bit_depth.py::test_an_8_bit_source_is_byte_identical_with_the_switch_on_or_off`
-runs a bundled sample with the switch off and on, with H.264 and with H.265 selected,
+`tests/test_high_bit_depth.py::test_an_8_bit_source_is_byte_identical_in_every_mode`
+runs a bundled sample with the switch `off`, `auto` and `on`, with H.264 and with H.265 selected,
 and compares the MP4 bytes and the MKV's decoded frames (Matroska writes a random
 segment UID, so its bytes never repeat).
 
 ### When it does nothing (one line each, then 8-bit as before)
 
-* `VIDEOWIPE_HIGH_BIT_DEPTH=off`;
+* `VIDEOWIPE_HIGH_BIT_DEPTH=off`; or `auto` and the source is SDR (no line from here;
+  `source_checks` says how to opt in);
 * dual (side by side) output, because the frame is twice as tall; a trial run (a
   preview: no second output); the source not read by the ffmpeg reader
   (`VIDEOWIPE_DECODE=opencv`, or the reader fell back);
@@ -100,7 +130,8 @@ so).
 
 ## After
 
-Same sources, same harness, `VIDEOWIPE_HIGH_BIT_DEPTH=auto` (this machine, libx265):
+Same sources, same harness, `VIDEOWIPE_HIGH_BIT_DEPTH=on` for the SDR row and `auto` for
+the HDR ones (this machine, libx265):
 
 | source | output | ramp: rms / max, levels of 640, run | shallow: rms / max, levels of 65, run | tags |
 |---|---|---|---|---|
@@ -172,6 +203,6 @@ the byte-identical 8-bit gate; the command rewrite and its failure lines.
 
 On the Mac:
 
-    python scripts/high_bit_depth_roundtrip.py --modes off,auto --json /tmp/hbd.json
+    python scripts/high_bit_depth_roundtrip.py --modes off,auto,on --json /tmp/hbd.json
     VIDEOWIPE_HIGH_BIT_DEPTH_ENCODER=hevc_videotoolbox python scripts/high_bit_depth_roundtrip.py --kinds pq --modes auto
     ffprobe -v error -show_frames -read_intervals %+#1 -select_streams v:0 -of json OUTPUT.mkv

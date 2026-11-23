@@ -24,7 +24,7 @@ values (banding), and whether the tags and the HDR metadata survive.
 
 Usage::
 
-    python scripts/high_bit_depth_roundtrip.py                  # off and auto, all three
+    python scripts/high_bit_depth_roundtrip.py                  # off, auto and on, all three kinds
     python scripts/high_bit_depth_roundtrip.py --kinds pq --modes auto --frames 8 --keep DIR
 """
 
@@ -191,7 +191,7 @@ def run(kind: str, mode: str, frames: int, workdir: Path, rr) -> dict:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--kinds", default=",".join(KINDS), help="comma-separated: sdr10, pq, hlg")
-    parser.add_argument("--modes", default="off,auto", help="VIDEOWIPE_HIGH_BIT_DEPTH values to run")
+    parser.add_argument("--modes", default="off,auto,on", help="VIDEOWIPE_HIGH_BIT_DEPTH values to run")
     parser.add_argument("--frames", type=int, default=12)
     parser.add_argument("--json")
     parser.add_argument("--keep", help="keep the generated files in this directory")

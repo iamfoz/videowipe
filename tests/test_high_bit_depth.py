@@ -76,7 +76,8 @@ def sources(tmp_path_factory):
 
 def test_mode_and_encoder_switches(monkeypatch):
     assert highbit.mode() == "auto" and highbit.encoder_override() == "auto"
-    for value, expected in [("off", "off"), (" OFF ", "off"), ("auto", "auto"), ("on", "auto")]:
+    for value, expected in [("off", "off"), (" OFF ", "off"), ("auto", "auto"), ("on", "on"),
+                            (" On ", "on"), ("yes", "auto"), ("", "auto")]:
         monkeypatch.setenv("VIDEOWIPE_HIGH_BIT_DEPTH", value)
         assert highbit.mode() == expected
     for value, expected in [("libx265", "libx265"), ("hevc_videotoolbox", "hevc_videotoolbox"),
@@ -189,12 +190,61 @@ def test_the_output_options_label_the_frames_and_pass_the_hdr_metadata():
     assert options.index("-colorspace") < options.index("-tag:v")
 
 
-def test_source_checks_say_the_hevc_copy_keeps_the_depth(monkeypatch):
-    line = source_checks.describe({"pix_fmt": "yuv420p10le"})[0]
-    assert "10-bit" in line and "HEVC copy keeps the source's bit depth" in line
+def test_source_checks_say_where_the_hevc_copy_is_and_how_to_ask_for_it(monkeypatch):
+    sdr, hdr = {"pix_fmt": "yuv420p10le"}, {"pix_fmt": "yuv420p10le", "color_transfer": "smpte2084"}
+    # auto: HDR gets the copy, SDR says how to opt in
+    assert "HEVC copy keeps the source's bit depth" in source_checks.describe(hdr)[0]
+    line = source_checks.describe(sdr)[0]
+    assert "10-bit" in line and "VIDEOWIPE_HIGH_BIT_DEPTH=on" in line and "keeps the source's" not in line
+    monkeypatch.setenv("VIDEOWIPE_HIGH_BIT_DEPTH", "on")
+    assert "HEVC copy keeps the source's bit depth" in source_checks.describe(sdr)[0]
+    assert "VIDEOWIPE_HIGH_BIT_DEPTH=on" not in source_checks.describe(sdr)[0]
     monkeypatch.setenv("VIDEOWIPE_HIGH_BIT_DEPTH", "off")
-    assert "HEVC copy" not in source_checks.describe({"pix_fmt": "yuv420p10le"})[0]
+    for stream in (sdr, hdr):
+        line = source_checks.describe(stream)[0]
+        assert "HEVC copy" not in line and "VIDEOWIPE_HIGH_BIT_DEPTH" not in line
     assert source_checks.describe({"pix_fmt": "yuv420p"}) == []
+    for chosen in ("auto", "on", "off"):
+        monkeypatch.setenv("VIDEOWIPE_HIGH_BIT_DEPTH", chosen)
+        assert source_checks.describe({"pix_fmt": "yuv420p"}) == []
+
+
+def probe_text(transfer=None, mastering=False):
+    stream = {"width": 640, "height": 360, "pix_fmt": "yuv420p10le"}
+    if transfer:
+        stream["color_transfer"] = transfer
+    frames = []
+    if mastering:
+        frames = [{"side_data_list": [{"side_data_type": "Mastering display metadata",
+                                        "red_x": "34000/50000", "red_y": "16000/50000",
+                                        "green_x": "13250/50000", "green_y": "34500/50000",
+                                        "blue_x": "7500/50000", "blue_y": "3000/50000",
+                                        "white_point_x": "15635/50000", "white_point_y": "16450/50000",
+                                        "min_luminance": "1/10000", "max_luminance": "10000000/10000"}]}]
+    return json.dumps({"streams": [stream], "frames": frames})
+
+
+@pytest.mark.parametrize("transfer, chosen, expected", [
+    ("smpte2084", None, True), ("arib-std-b67", None, True), ("bt709", None, False), (None, None, False),
+    ("smpte2084", "on", True), ("bt709", "on", True), (None, "on", True),
+    ("smpte2084", "off", False), ("bt709", "off", False),
+])
+def test_which_sources_get_the_copy(monkeypatch, transfer, chosen, expected):
+    """auto: PQ and HLG by their transfer tag; on: everything above 8 bits; off: nothing."""
+    if chosen:
+        monkeypatch.setenv("VIDEOWIPE_HIGH_BIT_DEPTH", chosen)
+    assert highbit.wanted(highbit.parse_source(probe_text(transfer))) is expected
+
+
+def test_mastering_metadata_without_a_transfer_tag_is_not_taken_for_pq():
+    """HDR10 side data says what the mastering display was, not which transfer the picture
+    uses (HLG and wide-gamut SDR carry it too), so it is reported, not acted on."""
+    source = highbit.parse_source(probe_text(None, mastering=True))
+    assert source.mastering is not None and source.untagged_hdr10
+    assert not source.hdr and not highbit.wanted(source)
+    assert highbit.wanted(highbit.parse_source(probe_text("smpte2084", mastering=True)))
+    assert not highbit.parse_source(probe_text("smpte2084", mastering=True)).untagged_hdr10
+    assert not highbit.parse_source(probe_text(None)).untagged_hdr10
 
 
 # --- The 16-bit reader ----------------------------------------------------------------------
@@ -269,8 +319,11 @@ def test_an_8_bit_source_never_takes_this_path(tmp_path, capsys):
 
 
 @needs_x265
-@pytest.mark.parametrize("kind, label", [("sdr10", "10-bit SDR"), ("pq", "HDR10 (PQ)"), ("hlg", "HLG")])
-def test_a_high_bit_depth_source_is_planned_with_the_ffmpeg_reader(sources, capsys, kind, label):
+@pytest.mark.parametrize("kind, label, chosen", [("sdr10", "10-bit SDR", "on"), ("pq", "HDR10 (PQ)", "auto"),
+                                                 ("hlg", "HLG", "auto"), ("pq", "HDR10 (PQ)", "on")])
+def test_a_high_bit_depth_source_is_planned_with_the_ffmpeg_reader(sources, capsys, monkeypatch, kind, label,
+                                                                   chosen):
+    monkeypatch.setenv("VIDEOWIPE_HIGH_BIT_DEPTH", chosen)
     path = str(sources[kind])
     reader = decode.open_capture(path)
     assert isinstance(reader, decode.FfmpegFrameReader)  # even HDR (with VIDEOWIPE_HIGH_BIT_DEPTH=auto)
@@ -281,6 +334,43 @@ def test_a_high_bit_depth_source_is_planned_with_the_ffmpeg_reader(sources, caps
     assert highbit.current(path) is plan
     reader.release()
     assert capsys.readouterr().out == ""  # said when the command is rewritten, not when planned
+
+
+@needs_x265
+def test_auto_leaves_an_sdr_source_alone_and_on_asks_for_the_copy(sources, capsys, monkeypatch):
+    path = str(sources["sdr10"])
+    reader = decode.open_capture(path)
+    assert isinstance(reader, decode.FfmpegFrameReader)  # still read by ffmpeg (decode.md), 8-bit
+    plan = highbit.plan_high_bit_depth(job_for(path, reader))
+    assert not plan.active and capsys.readouterr().out == ""  # source_checks says how to opt in
+    assert highbit.output_args(path, "o.mp4", 360) is None
+    assert export.hevc_output_args(path, "o.mp4", 360) == []
+    monkeypatch.setenv("VIDEOWIPE_HIGH_BIT_DEPTH", "on")
+    assert highbit.plan_high_bit_depth(job_for(path, reader)).active
+    reader.release()
+
+
+@needs_x265
+def test_untagged_hdr10_is_left_alone_with_one_line_saying_how_to_get_the_copy(tmp_path, capsys, monkeypatch):
+    """An HDR10-looking source with no transfer tag: not PQ by the rule, so not copied in
+    auto, and told how to ask."""
+    source = tmp_path / "untagged.mkv"
+    raw = bytes(640 * 360 * 3) * 4  # yuv420p10le: 640*360*1.5 samples of 2 bytes
+    params = ("log-level=error:master-display=G(13250,34500)B(7500,3000)R(34000,16000)"
+              "WP(15635,16450)L(10000000,1):max-cll=1000,400")
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "-s", "640x360",
+                    "-r", "25", "-i", "-", "-c:v", "libx265", "-pix_fmt", "yuv420p10le", "-x265-params", params,
+                    str(source)], input=raw, check=True)
+    parsed = highbit.probe_source(str(source))
+    if parsed is None or parsed.mastering is None:
+        pytest.skip("this ffmpeg does not carry the mastering metadata of the test clip")
+    assert parsed.colour.transfer is None and parsed.untagged_hdr10
+    plan = highbit.plan_high_bit_depth(job_for(source, decode.FfmpegFrameReader(str(source), "bt709", "tv")))
+    lines = [l for l in capsys.readouterr().out.splitlines() if l]
+    assert not plan.active and len(lines) == 1
+    assert "no transfer tag" in lines[0] and "VIDEOWIPE_HIGH_BIT_DEPTH=on" in lines[0]
+    monkeypatch.setenv("VIDEOWIPE_HIGH_BIT_DEPTH", "on")
+    assert highbit.plan_high_bit_depth(job_for(source, decode.FfmpegFrameReader(str(source), "bt709", "tv"))).active
 
 
 @needs_x265
@@ -296,6 +386,7 @@ def test_the_hevc_output_exists_whichever_codec_is_chosen(sources):
 
 @needs_x265
 def test_what_it_cannot_do_it_says_once_and_leaves_the_job_8_bit(sources, capsys, monkeypatch):
+    monkeypatch.setenv("VIDEOWIPE_HIGH_BIT_DEPTH", "on")
     path = str(sources["sdr10"])
     reader = decode.open_capture(path)
     cases = [
@@ -314,6 +405,7 @@ def test_what_it_cannot_do_it_says_once_and_leaves_the_job_8_bit(sources, capsys
     plan = highbit.plan_high_bit_depth(job_for(path, reader))
     assert not plan.active and "no 10-bit HEVC encoder" in capsys.readouterr().out
     monkeypatch.undo()
+    monkeypatch.setenv("VIDEOWIPE_HIGH_BIT_DEPTH", "on")
     highbit._checked.cache_clear()
     monkeypatch.setattr(highbit, "check_pipeline", lambda *a: False)
     plan = highbit.plan_high_bit_depth(job_for(path, reader))
@@ -323,6 +415,7 @@ def test_what_it_cannot_do_it_says_once_and_leaves_the_job_8_bit(sources, capsys
 
 @needs_x265
 def test_off_and_trial_runs_stay_8_bit_without_a_line(sources, capsys, monkeypatch):
+    monkeypatch.setenv("VIDEOWIPE_HIGH_BIT_DEPTH", "on")
     path = str(sources["sdr10"])
     reader = decode.open_capture(path)
     trial = job_for(path, reader)
@@ -418,9 +511,10 @@ def run(kind, mode, tmp_path, monkeypatch, sources):
 
 
 @needs_x265
-@pytest.mark.parametrize("kind", ["sdr10", "pq", "hlg"])
-def test_the_hevc_copy_keeps_the_bit_depth_the_tags_and_the_hdr_metadata(kind, tmp_path, monkeypatch, sources):
-    output, out_dir, log = run(kind, "auto", tmp_path, monkeypatch, sources)
+@pytest.mark.parametrize("kind, chosen", [("sdr10", "on"), ("pq", "auto"), ("hlg", "auto"), ("pq", "on")])
+def test_the_hevc_copy_keeps_the_bit_depth_the_tags_and_the_hdr_metadata(kind, chosen, tmp_path, monkeypatch,
+                                                                         sources):
+    output, out_dir, log = run(kind, chosen, tmp_path, monkeypatch, sources)
     assert any(line.startswith("Keeping the source's bit depth") for line in log)
     mkv = out_dir / (output.stem + ".mkv")
     assert mkv.exists() and output.exists()
@@ -442,6 +536,18 @@ def test_the_hevc_copy_keeps_the_bit_depth_the_tags_and_the_hdr_metadata(kind, t
 
 
 @needs_x265
+def test_an_sdr_source_gets_no_hevc_copy_in_auto_and_is_what_off_gives(tmp_path, monkeypatch, sources):
+    """SDR above 8 bits is opt-in: in auto the run is the run with the switch off (same MP4
+    bytes), with no second file and no bit-depth line."""
+    auto, auto_dir, log = run("sdr10", "auto", tmp_path, monkeypatch, sources)
+    off, off_dir, _ = run("sdr10", "off", tmp_path, monkeypatch, sources)
+    assert not any("bit depth" in line for line in log)
+    assert not list(auto_dir.glob("*.mkv")) and not list(off_dir.glob("*.mkv"))
+    assert hb.probe(str(auto))["pix_fmt"] == "yuv420p"
+    assert content_hash(auto) == content_hash(off)
+
+
+@needs_x265
 def test_without_the_switch_a_high_bit_depth_source_is_8_bit_as_before(tmp_path, monkeypatch, sources):
     output, out_dir, log = run("pq", "off", tmp_path, monkeypatch, sources)
     assert not any("bit depth" in line for line in log)
@@ -451,7 +557,7 @@ def test_without_the_switch_a_high_bit_depth_source_is_8_bit_as_before(tmp_path,
 
 @needs_x265
 def test_the_painted_region_is_in_the_hevc_copy_and_nothing_else_moved(tmp_path, monkeypatch, sources):
-    output, out_dir, log = run("sdr10", "auto", tmp_path, monkeypatch, sources)
+    output, out_dir, log = run("sdr10", "on", tmp_path, monkeypatch, sources)
     mkv = out_dir / (output.stem + ".mkv")
     oy, _, _ = hb.decode_planes(str(mkv))
     x0, y0, x1, y1 = hb.MASK_BOX
@@ -474,7 +580,7 @@ def content_hash(path):
 
 @pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="requires ffmpeg")
 @pytest.mark.parametrize("codec", ["h264", "h265"])
-def test_an_8_bit_source_is_byte_identical_with_the_switch_on_or_off(codec, tmp_path, monkeypatch):
+def test_an_8_bit_source_is_byte_identical_in_every_mode(codec, tmp_path, monkeypatch):
     if codec == "h265" and not has_x265():
         pytest.skip("requires libx265")
     clip = tmp_path / "clip.mp4"
@@ -491,7 +597,7 @@ def test_an_8_bit_source_is_byte_identical_with_the_switch_on_or_off(codec, tmp_
 
     monkeypatch.setattr(subprocess, "Popen", popen)
     hashes = {}
-    for mode in ("off", "auto"):
+    for mode in ("off", "auto", "on"):
         monkeypatch.setenv("VIDEOWIPE_HIGH_BIT_DEPTH", mode)
         decode._decide.cache_clear()
         highbit._current.clear()
@@ -499,10 +605,13 @@ def test_an_8_bit_source_is_byte_identical_with_the_switch_on_or_off(codec, tmp_
         folder.mkdir()
         rr.run_pipeline(clip, folder, (700, 380, 760, 420))
         hashes[mode] = {p.suffix: content_hash(p) for p in sorted(folder.iterdir())}
-    assert hashes["off"] and hashes["off"].keys() == hashes["auto"].keys()
-    assert hashes["off"] == hashes["auto"]
+    assert hashes["off"]
+    for mode in ("auto", "on"):
+        assert hashes["off"].keys() == hashes[mode].keys()
+        assert hashes["off"] == hashes[mode], mode
     # and the command is the same but for the output folder
     def strip(cmds):
         return [[a.rsplit("/", 1)[-1] if a.startswith(str(tmp_path)) else a for a in c] for c in cmds]
 
-    assert strip(commands["off"]) == strip(commands["auto"])
+    for mode in ("auto", "on"):
+        assert strip(commands["off"]) == strip(commands[mode]), mode

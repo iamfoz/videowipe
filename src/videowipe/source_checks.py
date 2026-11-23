@@ -42,11 +42,17 @@ def describe(stream: dict) -> list[str]:
     lines = []
     transfer = HDR_TRANSFERS.get(stream.get("color_transfer"))
     depth = bit_depth(stream.get("pix_fmt"), stream.get("bits_per_raw_sample"))
-    # With the bit-depth path (videowipe.highbit) the MP4 review copy is still 8-bit
-    # but an HEVC copy keeps the source's bit depth where this ffmpeg can.
+    # With the bit-depth path (videowipe.highbit) the MP4 review copy is still 8-bit but
+    # an HEVC copy keeps the source's bit depth where this ffmpeg can: for HDR sources
+    # unless VIDEOWIPE_HIGH_BIT_DEPTH=off, for SDR ones when it is on.
     from videowipe.highbit import mode as high_bit_mode
+    chosen = high_bit_mode()
     kept = (" The HEVC copy keeps the source's bit depth where this ffmpeg can "
-            "(docs/high-bit-depth.md).") if depth > 8 and high_bit_mode() == "auto" else ""
+            "(docs/high-bit-depth.md).")
+    opt_in = (" Set VIDEOWIPE_HIGH_BIT_DEPTH=on to also write a 10-bit HEVC copy that keeps "
+              "it (docs/high-bit-depth.md).")
+    if depth <= 8 or chosen == "off":
+        kept = opt_in = ""
     if transfer:
         lines.append(
             f"Warning: the source is HDR ({transfer}); the cleaned video is 8-bit SDR "
@@ -55,7 +61,7 @@ def describe(stream: dict) -> list[str]:
     elif depth > 8:
         lines.append(
             f"Warning: the source is {depth}-bit; the cleaned video is made from 8-bit "
-            "frames, so gradients may show banding." + kept
+            "frames, so gradients may show banding." + (kept if chosen == "on" else opt_in)
         )
     return lines
 

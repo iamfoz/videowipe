@@ -6,7 +6,8 @@ in gradients, PQ and HLG pictures most of all) and drops the tags and the HDR
 metadata (``docs/high-bit-depth.md`` has the measurements).
 
 The model still works on 8 bits (it was trained on them, and the region it paints is
-small); only the *pipeline around it* changes, and only for sources above 8 bits:
+small); only the *pipeline around it* changes, and only for the sources above 8 bits that
+the switch below asks for:
 
 1. The compositor's second frame reader (the one the output frames are composed
    from, :mod:`videowipe.decode`) decodes to 16-bit BGR (``bgr48le``) with the
@@ -23,8 +24,25 @@ small); only the *pipeline around it* changes, and only for sources above 8 bits
    and, for HDR10, its mastering display and content light level, which x265 writes
    from explicit parameters because raw frames carry no side data.
 
-``VIDEOWIPE_HIGH_BIT_DEPTH`` is ``auto`` (default) or ``off`` (upstream's behaviour
-exactly). An 8-bit source never takes this path, so its output is byte for byte what
+``VIDEOWIPE_HIGH_BIT_DEPTH`` says which sources get this:
+
+``auto`` (default)
+    HDR sources only: a transfer of PQ (``smpte2084``) or HLG (``arib-std-b67``) by the
+    source's own tags. Their 8-bit copy is the signal viewed as SDR with no tags, which
+    nothing should settle for.
+``on``
+    every source above 8 bits, SDR included (a 10-bit BT.709 clip), for whoever wants
+    the 10-bit copy of those too.
+``off``
+    nobody: upstream's behaviour exactly.
+
+An SDR source above 8 bits is opt-in because its 8-bit output is a faithful picture
+(gradients may band) and the extra file costs an HEVC encode. A source is HDR by its
+tags only: HDR10 mastering metadata with no transfer tag is not taken to mean PQ (it
+does not say which transfer the picture uses), so such a source is treated as SDR and
+a line says how to get the copy (``VIDEOWIPE_HIGH_BIT_DEPTH=on``).
+
+An 8-bit source never takes this path in any mode, so its output is byte for byte what
 it was. Where this ffmpeg cannot do it (checked by encoding known colours first) or
 the job cannot use it (dual output, trial runs, a source not read by the ffmpeg
 reader) one line says so and the job runs as before.
@@ -53,12 +71,13 @@ from videowipe.timing import _run
 
 ENV_VAR = "VIDEOWIPE_HIGH_BIT_DEPTH"
 ENCODER_ENV = "VIDEOWIPE_HIGH_BIT_DEPTH_ENCODER"
-MODES = ("auto", "off")
+MODES = ("auto", "on", "off")
 ENCODERS = ("auto", "libx265", "hevc_videotoolbox")
 
 
 def mode() -> str:
-    """``auto`` (default) or ``off``, from ``VIDEOWIPE_HIGH_BIT_DEPTH``."""
+    """``auto`` (default: HDR sources), ``on`` (every source above 8 bits) or ``off``,
+    from ``VIDEOWIPE_HIGH_BIT_DEPTH``."""
     value = os.environ.get(ENV_VAR, "auto").strip().lower()
     return value if value in MODES else "auto"
 
@@ -132,7 +151,20 @@ class HighSource:
 
     @property
     def hdr(self) -> bool:
+        """PQ or HLG by the stream's transfer tag (the one ``source_checks`` warns about)."""
         return self.colour.hdr
+
+    @property
+    def untagged_hdr10(self) -> bool:
+        """HDR10 mastering metadata but no transfer tag at all: probably HDR, but the
+        file does not say which transfer, so it is not treated as HDR."""
+        return self.mastering is not None and self.colour.transfer is None
+
+
+def wanted(source: HighSource) -> bool:
+    """Does ``VIDEOWIPE_HIGH_BIT_DEPTH`` ask for a 10-bit copy of *source* (above 8 bits)?"""
+    chosen = mode()
+    return chosen == "on" or (chosen == "auto" and source.hdr)
 
 
 def _fraction(text):
@@ -422,6 +454,14 @@ def plan_high_bit_depth(job) -> HighBitPlan:
     source = probe_source(path)
     if source is None or source.depth <= 8:
         return plan  # 8-bit (or unreadable: colour.py says so): upstream's pipeline, untouched
+    if not wanted(source):
+        # an SDR source above 8 bits in ``auto``: upstream's pipeline (source_checks has
+        # said how to opt in), unless it looks like HDR10 with no transfer tag
+        if source.untagged_hdr10:
+            print("Warning: the source carries HDR10 mastering metadata but no transfer tag, so it "
+                  "is treated as SDR; set VIDEOWIPE_HIGH_BIT_DEPTH=on for a 10-bit HEVC copy "
+                  "(tagged as the source is).")
+        return plan
 
     def refuse(why: str):
         print(f"Warning: {why}; the cleaned video is 8-bit.")
