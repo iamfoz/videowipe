@@ -233,14 +233,14 @@ def _frame_tags(space, primaries, transfer, rng) -> str:
     return "setparams=" + ":".join(fields) if fields else ""
 
 
-def _labelled(filters, space, primaries, transfer, rng):
-    """``-vf`` with *filters*, a conversion to yuv420p, then the frame labels,
+def _labelled(filters, space, primaries, transfer, rng, pix_fmt="yuv420p"):
+    """``-vf`` with *filters*, a conversion to *pix_fmt*, then the frame labels,
     followed by the same tags as output options (which older ffmpeg needs to
     write them). The labels must come after the conversion: on BGR frames they
     tell the conversion which matrix to use (BT.709 for a BT.709 label, on
     ffmpeg 6.1 as on 9), which is not the point; after it they only label."""
     labels = _frame_tags(space, primaries, transfer, rng)
-    chain = [*filters, "format=yuv420p", labels] if labels else list(filters)
+    chain = [*filters, f"format={pix_fmt}", labels] if labels else list(filters)
     return (["-vf", ",".join(chain)] if chain else []) + _tag_options(space, primaries, transfer, rng)
 
 

@@ -214,19 +214,23 @@ def generate(folder: Path, frames: int = 90) -> dict[str, Path]:
             "h264_metadata=matrix_coefficients=1:colour_primaries=1:transfer_characteristics=1",
             str(tagged))
     cases["bt709_tagged"] = tagged
+    # The colour tags go on the frames (``setparams``, after any conversion) as well as
+    # on the output: newer ffmpeg converts the pixels to colour options given on the
+    # output alone, and writes only the tags the frames carry.
     for fmt in ("yuv422p", "yuv444p"):
         path = folder / f"{fmt}.mp4"
         _ffmpeg("-f", "lavfi", "-i", content, "-frames:v", "40", "-c:v", "libx264", "-crf", "12",
-                "-pix_fmt", fmt, "-colorspace", "bt709", str(path))
+                "-pix_fmt", fmt, *colour._labelled((), "bt709", None, None, None, pix_fmt=fmt), str(path))
         cases[fmt] = path
     full = folder / "full_range.mp4"
-    _ffmpeg("-f", "lavfi", "-i", content, "-frames:v", "40", "-vf", "scale=out_range=pc",
-            "-c:v", "libx264", "-crf", "12", "-pix_fmt", "yuv420p", "-color_range", "pc",
-            "-colorspace", "bt709", str(full))
+    _ffmpeg("-f", "lavfi", "-i", content, "-frames:v", "40", "-c:v", "libx264", "-crf", "12",
+            "-pix_fmt", "yuv420p",
+            *colour._labelled(("scale=out_range=pc",), "bt709", None, None, "pc"), str(full))
     cases["full_range"] = full
     ten = folder / "yuv420p10.mp4"
     _ffmpeg("-f", "lavfi", "-i", content, "-frames:v", "40", "-c:v", "libx264", "-crf", "12",
-            "-pix_fmt", "yuv420p10le", "-colorspace", "bt709", str(ten))
+            "-pix_fmt", "yuv420p10le",
+            *colour._labelled((), "bt709", None, None, None, pix_fmt="yuv420p10le"), str(ten))
     cases["yuv420p10"] = ten
     return cases
 

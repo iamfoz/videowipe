@@ -357,6 +357,29 @@ def test_the_relabel_alone_gives_the_asked_colours_where_the_frames_win(
     assert patch_error(decode_with(without_label), matrix, rng) > 3.0
 
 
+@pytest.mark.parametrize("pix_fmt, options", [
+    ("yuv420p", ("-colorspace", "bt709")),
+    ("yuv420p", ("-colorspace", "bt709", "-color_range", "pc")),
+    ("yuv422p", ("-colorspace", "bt709")),
+    ("yuv420p10le", ("-color_trc", "smpte2084", "-colorspace", "bt2020nc", "-color_primaries", "bt2020")),
+])
+def test_tagging_a_test_clip_labels_it_and_does_not_convert_it(tmp_path, pix_fmt, options):
+    """The tags of a clip made by ``make`` are labels. Made with and without them the
+    clip decodes to the same YCbCr (an ffmpeg that converts the pixels to colour options
+    on the output would make the tagged clip a different picture)."""
+    def planes(path):
+        # as stored: no conversion of the pixel format or range on the way out (a full-range
+        # clip is read as yuvj420p, whose bytes are the same as yuv420p's)
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-"],
+                              capture_output=True, check=True).stdout
+
+    plain = make(tmp_path, "plain.mp4", "320x240", pix_fmt)
+    tagged = make(tmp_path, "tagged.mp4", "320x240", pix_fmt, *options)
+    tags = colour.probe_source(tagged)
+    assert tags.space == options[options.index("-colorspace") + 1]
+    assert planes(tagged) == planes(plain)
+
+
 def test_the_start_up_check_passes_whichever_of_the_label_and_the_options_wins(tmp_path, monkeypatch):
     sync = ("-fps_mode", "passthrough")
     assert decode._reader_decodes_known_colours("bt709", "tv", sync)
@@ -374,10 +397,26 @@ def test_the_start_up_check_passes_whichever_of_the_label_and_the_options_wins(t
 # --- The decision -----------------------------------------------------------------------------
 
 
+#: the output options that tag a stream, in the order of ``colour._labelled``'s arguments
+_TAG_FLAGS = ("-colorspace", "-color_primaries", "-color_trc", "-color_range")
+
+
 def make(tmp_path, name, size="1280x720", pix_fmt="yuv420p", *options):
+    """A short clip of test pictures. Colour tags among *options* label the frames
+    (``setparams``, after the conversion to *pix_fmt*) as well as being given on the
+    output: newer ffmpeg converts the pixels to colour options given on the output
+    alone, and writes only the tags the frames carry, so the clip would not be
+    the one the test describes."""
+    tags, rest, items = {}, [], iter(options)
+    for option in items:
+        if option in _TAG_FLAGS:
+            tags[option] = next(items)
+        else:
+            rest.append(option)
+    labels = colour._labelled((), *(tags.get(flag) for flag in _TAG_FLAGS), pix_fmt=pix_fmt) if tags else []
     path = tmp_path / name
     subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", f"testsrc2=size={size}:rate=25",
-                    "-frames:v", "8", "-c:v", "libx264", "-crf", "10", "-pix_fmt", pix_fmt, *options,
+                    "-frames:v", "8", "-c:v", "libx264", "-crf", "10", "-pix_fmt", pix_fmt, *labels, *rest,
                     str(path)], check=True)
     return str(path)
 

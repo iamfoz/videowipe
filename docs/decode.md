@@ -237,3 +237,17 @@ class to the ffmpeg reader (look for `Decoding with ffmpeg`) and give the dE of 
 are the thing to confirm). The reader checks `-fps_mode passthrough` against known
 colours before it is used, so an ffmpeg that refuses it falls back with one line
 rather than decoding wrongly.
+
+The clips that script (and the tests) generate carry their colour tags on the frames
+(`setparams`, after any conversion) as well as on the output, because ffmpeg 9 converts
+the pixels to colour options given on the output alone. `tests/test_decode.py` checks
+that labelling does not change the pixels (the same clip made with and without the
+tags decodes to the same YCbCr), which would fail on an ffmpeg that converts.
+
+The `vs correct` column of `--correct` is the colour correction itself, not a measure of
+how the clips were made: where OpenCV honours the source's matrix tag (this machine's
+4.14.0 does) it is 0.00 for every 8-bit clip, and where OpenCV decodes every source as
+BT.601 (the reference Mac's does) it is the BT.601 against BT.709 difference, several
+code values, for exactly the clips tagged BT.709 (`bt709_tagged`, `yuv422p`, `yuv444p`,
+`full_range`, `yuv420p10`). `yuv420p10` differs further by OpenCV's own 10-bit
+conversion (1.60 here).
