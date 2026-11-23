@@ -453,6 +453,19 @@ def test_a_source_smaller_than_the_probe_patches_is_still_probed():
 
 
 @needs_ffmpeg
+def test_the_encode_check_allows_a_few_code_values_and_not_a_wrong_matrix(monkeypatch):
+    tags = {"-colorspace": "bt709", "-color_primaries": "bt709", "-color_trc": "bt709", "-color_range": "tv"}
+    options = colour._labelled(colour._scale_filters("bt709", "tv"), "bt709", "bt709", "bt709", "tv")
+    assert colour.check_encode(options, "bt709", "tv", tags)
+    assert not colour.check_encode(options, "bt601", "tv", tags)  # encoded with 709, expected 601
+    real = colour.rgb_to_yuv
+    for shift, expected in ((3.0, True), (colour.ENCODE_TOLERANCE + 3, False)):
+        # an ffmpeg whose conversion is that far out in both chroma planes
+        monkeypatch.setattr(colour, "rgb_to_yuv", lambda *a, shift=shift: real(*a) + np.array([0, shift, shift]))
+        assert colour.check_encode(options, "bt709", "tv", tags) is expected
+
+
+@needs_ffmpeg
 def test_it_composes_with_the_source_timestamps_of_a_variable_rate_source(tmp_path, monkeypatch):
     """The timestamp rewrite (Matroska frame pipe) and this one touch the same command."""
     source = tmp_path / "jitter.mp4"

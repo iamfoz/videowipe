@@ -130,7 +130,9 @@ has any colour tags and is not HDR:
    survive for untouched pixels and the tags describe them truthfully.
 4. Before the encode starts, those exact options are run on known colours with this
    ffmpeg: the output must carry the requested tags and its YCbCr values must be
-   those of the chosen matrix and range.
+   those of the chosen matrix and range, to within 4 code values (another swscale
+   rounds chroma a code value or two differently; the nearest wrong matrix is 8 or
+   more away on those colours).
 
 When all of that holds, one line is printed:
 `Keeping the source's colour tags (BT.709, limited range; the source is bt709).`

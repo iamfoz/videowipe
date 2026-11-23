@@ -296,6 +296,10 @@ def _scale_filters(matrix: str, rng: str):
     return [f"scale=out_color_matrix={matrix}:out_range={rng}"]
 
 
+#: the largest YCbCr error (8-bit code values) :func:`check_encode` accepts
+ENCODE_TOLERANCE = 4.0
+
+
 def check_encode(options, matrix: str, rng: str, expected_tags: dict) -> bool:
     """Run ffmpeg with *options* on known colours: true when it accepts them, the
     output carries *expected_tags* (ffprobe names) and its YCbCr values are those
@@ -340,7 +344,9 @@ def check_encode(options, matrix: str, rng: str, expected_tags: dict) -> bool:
                      cb[8:24, i * stripe // 2 + 4:i * stripe // 2 + 12].mean(),
                      cr[8:24, i * stripe // 2 + 4:i * stripe // 2 + 12].mean())
                     for i in range(len(colours))])
-    return float(np.abs(rgb_to_yuv(colours, matrix, rng) - got).max()) <= 3.0
+    # Another swscale rounds chroma differently by a code value or two; the nearest wrong
+    # matrix is 8 or more codes away on these colours (BT.709 against BT.2020 in Y).
+    return float(np.abs(rgb_to_yuv(colours, matrix, rng) - got).max()) <= ENCODE_TOLERANCE
 
 
 @dataclass
