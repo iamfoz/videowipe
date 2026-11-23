@@ -419,6 +419,11 @@ def _describe(matrix: str, rng: str, source: SourceColour) -> str:
            f"{source.space or 'untagged'}"
 
 
+#: after a conversion: frames in yuv420p carrying no colour labels at all
+_UNLABELLED = ("format=yuv420p,setparams=colorspace=unknown:color_primaries=unknown:"
+               "color_trc=unknown:range=unknown")
+
+
 def _output_plan(source: SourceColour, matrix: str, rng: str, tagged: bool):
     """The ``(options, second, description, tags)`` for frames whose BGR values are
     the source's true colours under *matrix* and *rng*, or ``None`` when this
@@ -430,6 +435,11 @@ def _output_plan(source: SourceColour, matrix: str, rng: str, tagged: bool):
     options = _labelled(_scale_filters(matrix, rng), tags.get("-colorspace"),
                         tags.get("-color_primaries"), tags.get("-color_trc"),
                         tags.get("-color_range"))
+    if options and not tags:
+        # A source with no tags stays untagged. Newer ffmpeg's scale filter labels
+        # what it converts (measured on 9.1: the output came out tagged bt709), so
+        # the labels are reset after the conversion; older ffmpeg writes none anyway.
+        options = ["-vf", options[1] + "," + _UNLABELLED, *options[2:]]
     if options and not check_encode(options, matrix, rng, tags):
         return None
     # The HEVC copy is limited range by design. Its conversion is changed only

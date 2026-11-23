@@ -629,10 +629,11 @@ def test_the_encode_uses_the_matrix_the_reader_decoded_with(tmp_path):
     reader = decode.FfmpegFrameReader(hd, "bt709", "tv")
     plan = colour.plan_output_colour(job_for(hd, reader))
     assert plan.active and not plan.tagged
-    assert plan.options == ("-vf", "scale=out_color_matrix=bt709:out_range=tv")  # no tags: it had none
+    # no tags: it had none, and the labels the scale filter adds on newer ffmpeg are reset
+    assert plan.options == ("-vf", "scale=out_color_matrix=bt709:out_range=tv," + colour._UNLABELLED)
     assert plan.second == ("-vf", "scale=out_color_matrix=bt709:out_range=tv")
     cmd = ["ffmpeg", "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "o.mp4"]
-    assert "scale=out_color_matrix=bt709:out_range=tv" in plan.command(cmd)
+    assert "scale=out_color_matrix=bt709:out_range=tv," + colour._UNLABELLED in plan.command(cmd)
     reader.release()
 
 
