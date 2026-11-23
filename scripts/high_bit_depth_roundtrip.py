@@ -93,9 +93,18 @@ def make_source(path: Path, kind: str, frames: int) -> None:
               *[f"{k}={v}" for k, v in spec["tags"].items()]]
     if "hdr" in spec:
         params.append(spec["hdr"])
+    # The tags are also set on the frames (setparams, after the conversion to the output's
+    # pixel format) and on the output: ffmpeg 9 converts the pixels to colour options given
+    # on the output alone and writes only the tags the frames carry, which would make the
+    # source something other than a limited-range PQ, HLG or BT.709 clip.
+    from videowipe import colour
+
+    tags = spec["tags"]
+    labels = colour._labelled((), tags["colormatrix"], tags["colorprim"], tags["transfer"], "tv",
+                              pix_fmt="yuv420p10le")
     cmd = ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "-s",
            f"{WIDTH}x{HEIGHT}", "-r", "25", "-i", "-", "-c:v", "libx265", "-pix_fmt", "yuv420p10le",
-           "-x265-params", ":".join(params), "-tag:v", "hvc1", str(path)]
+           *labels, "-x265-params", ":".join(params), "-tag:v", "hvc1", str(path)]
     result = subprocess.run(cmd, input=raw, capture_output=True)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.decode("utf-8", "replace")[-500:])
