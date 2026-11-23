@@ -338,10 +338,15 @@ _CHECK_COLOURS = np.array([(255, 0, 0), (0, 255, 0), (0, 0, 255), (128, 128, 128
                            (194, 150, 130), (16, 16, 16)], np.uint8)
 
 
+#: the largest 10-bit YCbCr error :func:`check_pipeline` accepts (12 is three 8-bit codes:
+#: another swscale rounds chroma a code or two differently; a wrong matrix is 30 or more out)
+CHECK_TOLERANCE = 12.0
+
+
 def check_pipeline(plan: HighBitPlan, preset) -> bool:
     """Encode known 16-bit colours with this job's output options and read the file
     back: the stream must be 10-bit with the tags asked for, and its YCbCr must be
-    the 10-bit values of ``plan.matrix`` (within 6 of 1023)."""
+    the 10-bit values of ``plan.matrix`` (within :data:`CHECK_TOLERANCE` of 1023)."""
     width, height, stripe = 224, 64, 32
     frame = np.zeros((height, width, 3), np.uint16)
     for i, rgb in enumerate(_CHECK_COLOURS):
@@ -382,7 +387,7 @@ def check_pipeline(plan: HighBitPlan, preset) -> bool:
                      cr[8:24, i * stripe // 2 + 4:i * stripe // 2 + 12].mean())
                     for i in range(len(_CHECK_COLOURS))])
     expected = colour.rgb_to_yuv(_CHECK_COLOURS, plan.matrix, "tv") * 4
-    return float(np.abs(expected - got).max()) <= 6.0
+    return float(np.abs(expected - got).max()) <= CHECK_TOLERANCE
 
 
 @functools.lru_cache(maxsize=16)

@@ -217,7 +217,7 @@ def test_the_16_bit_reader_yields_the_same_frames_as_the_8_bit_one(sources):
             assert b.shape == a.shape == b.high.shape
             # the 16-bit frame rounded to 8 bits, against swscale's own 8-bit conversion (which dithers)
             diff = np.abs(b.astype(int) - a.astype(int))
-            assert diff.max() <= 3 and diff.mean() < 1
+            assert diff.max() <= 4 and diff.mean() < 1.5  # another swscale dithers a little differently
             count += 1
         assert count == 8
     finally:
@@ -347,10 +347,12 @@ def test_hdr_with_moving_content_passes_the_start_up_check(tmp_path):
     """OpenCV converts the primaries and the transfer of a PQ clip, so its pictures are
     nothing like the ffmpeg reader's in value; the check must still see the same frames."""
     path = tmp_path / "pq_testsrc.mp4"
+    # tags on the frames (after the conversion) as well as on the output: ffmpeg 9 converts
+    # to colour options on the output alone and drops the primaries and transfer
+    labels = colour._labelled((), "bt2020nc", "bt2020", "smpte2084", None, pix_fmt="yuv420p10le")
     subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25",
-                    "-frames:v", "12", "-vf", "format=yuv420p10le", "-c:v", "libx264", "-pix_fmt",
-                    "yuv420p10le", "-color_trc", "smpte2084", "-colorspace", "bt2020nc",
-                    "-color_primaries", "bt2020", str(path)], check=True)
+                    "-frames:v", "12", "-c:v", "libx264", "-pix_fmt", "yuv420p10le", *labels,
+                    str(path)], check=True)
     plan = decode.decide(str(path))
     assert plan is not None and plan[:2] == ("bt2020", "tv")
 
@@ -383,6 +385,23 @@ def test_the_encode_check_catches_a_wrong_matrix(sources):
         assert not highbit.check_pipeline(plan, preset)  # converted with 709 but 2020 expected
     finally:
         highbit.video_filter = real
+
+
+@needs_x265
+def test_the_encode_check_allows_a_few_code_values_of_rounding(sources):
+    """Another swscale's chroma rounding may be a few 8-bit codes out (12 in 10-bit
+    values); the nearest wrong matrix is more than 30 away."""
+    plan = highbit.HighBitPlan(active=True, matrix="bt2020", encoder="libx265",
+                               tags={"-colorspace": "bt2020nc", "-color_primaries": "bt2020",
+                                     "-color_trc": "smpte2084"})
+    preset = export.choose_preset(360)
+    real = colour.rgb_to_yuv
+    try:
+        for shift, expected in ((2.0, True), (4.0, False)):  # 8-bit codes, in both chroma planes
+            colour.rgb_to_yuv = lambda *a, shift=shift: real(*a) + np.array([0, shift, shift])
+            assert highbit.check_pipeline(plan, preset) is expected
+    finally:
+        colour.rgb_to_yuv = real
 
 
 # --- The pipeline, end to end -----------------------------------------------------------------

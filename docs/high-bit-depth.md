@@ -87,7 +87,7 @@ segment UID, so its bytes never repeat).
 * this ffmpeg does not encode known 16-bit colours as 10-bit with the source's tags and
   matrix. Before the job starts, the exact output options are run on seven known
   colours: the stream must be 10-bit, limited range and carry the tags asked for, and its
-  YCbCr must be the 10-bit values of the matrix within 6 of 1023 (so an ffmpeg that
+  YCbCr must be the 10-bit values of the matrix within 12 of 1023, three 8-bit codes (so an ffmpeg that
   converts or tags differently, as 9.0.2 may, falls back rather than writes a wrong file);
 * the command is not the shape expected ("could not keep the source's bit depth with
   this ffmpeg command").
