@@ -266,6 +266,19 @@ values. Being fixed. Owner's decisions: sparse tracks on; colour-correct decodin
 on; 10-bit copy automatic for HDR (PQ/HLG) sources and opt-in
 (`VIDEOWIPE_HIGH_BIT_DEPTH=on`) for SDR above 8 bits; overlap on; mask crop off.
 
+**Mac confirmation (2026-11-23, ffmpeg 9.1):** `chore/integration` `0311ba8`
+(30 commits on `main` `12d3fa2`) passes on the Mac: 1,727 tests, then the last
+two (10-bit accuracy limits for `hevc_videotoolbox`, 2.48 and 2.75 of 1023)
+after a test fix; colour-correct decoding ran a real clean ("Decoding with
+ffmpeg (BT.709 ...)"); HDR (PQ, HLG) sources get the 10-bit `.mkv` in `auto`
+with tags and HDR10 metadata, SDR above 8 bits only with `on`. ffmpeg 9.1
+findings fixed on the way: a clip labelled full range cannot be read as limited
+range (the start-up check no longer asks for it); the scale filter labels what
+it converts (labels reset for untagged outputs); `-vsync` is gone. The owner
+saw no visible colour difference between the readers on `chinese1`. **The owner
+approved moving `main` to `0311ba8`; the push from this session was refused by
+its permission check, so the owner runs it (see the hand-over message).**
+
 Fixes made in review: the high-bit merge moved inside the compose function
 (it broke with the overlap's writer thread); the crop's import moved so it
 merges with the decode branch; a scratch path removed from `docs/mask-crop.md`.
