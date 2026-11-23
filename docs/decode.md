@@ -265,3 +265,14 @@ conversion (1.60 here).
 colour error of the reader's command, of the relabel alone (the scaler's options dropped:
 the case where the frames win), of the options alone and of neither; `full` and `label only`
 must be under 1.6, and the other two show which of label and options this ffmpeg follows.
+
+## ffmpeg 9.1: what the start-up check asks
+
+Measured on the reference Mac (ffmpeg 9.1): a clip labelled full range cannot be
+read as limited range by any label or scaler option (about 7.5 code values out),
+while every other override works. A job never asks for that conversion, because
+the reader follows a source's own range tag and assumes limited range only when
+there is none. So the start-up check now decodes two clips, one with no colour
+labels and one labelled exactly as the reader is asked to convert, and both must
+come out right. `scripts/verify_reader_override.py` still shows the full-range
+cases, marked "not required".

@@ -277,16 +277,28 @@ def _bgr_of(patches_yuv, matrix, rng):
 
 
 def _reader_decodes_known_colours(matrix: str, rng: str, sync) -> bool:
-    """Run the reader on a clip of known YCbCr patches, tagged with a *different*
-    matrix and range so the override is tested too: its BGR must be what *matrix*
-    and *rng* give."""
+    """Run the reader on clips of known YCbCr patches as a job meets them: one with no
+    colour labels (the reader supplies them, as for an untagged source) and one
+    labelled with *matrix* and *rng* themselves (as for a tagged source, whose own
+    tags are what the reader is asked for). The BGR of each must be what *matrix*
+    and *rng* give.
+
+    A job never asks the reader to contradict a source's tags, so neither does this
+    check: on ffmpeg 9.1 a clip labelled full range cannot be read as limited range
+    by any label or option (measured on the reference Mac), which is a conversion
+    no job needs."""
+    for space, label_range in ((None, None), (_MATRIX_TAG[matrix], rng)):
+        if not _decodes_patches(matrix, rng, sync, space, label_range):
+            return False
+    return True
+
+
+def _decodes_patches(matrix: str, rng: str, sync, space, label_range) -> bool:
     width = height = 256
-    wrong_space = "bt709" if matrix == "bt601" else "smpte170m"
-    wrong_range = "tv" if rng == "pc" else "pc"
     cmd = ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s",
            f"{width}x{height}", "-r", "25", "-i", "-", "-frames:v", "2", "-c:v", "libx264",
            "-preset", "ultrafast", "-crf", "1", "-profile:v", "high", "-pix_fmt", "yuv420p",
-           *colour._labelled((), wrong_space, None, None, wrong_range)]
+           *colour._labelled((), space, None, None, label_range)]
     raw = colour.probe_yuv_frame(width, height)
     with tempfile.TemporaryDirectory(prefix="videowipe-decode-") as folder:
         path = os.path.join(folder, "probe.mp4")

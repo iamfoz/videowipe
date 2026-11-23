@@ -63,6 +63,8 @@ def cases(tmp_path_factory):
 #: ffmpeg 9.1 against OpenCV 4.14.0). Order and count are what these tests prove.
 CONVERSION_TOLERANCE = 4
 CONVERSION_MEAN = 1.5
+#: with :func:`conversion_noise` (at most 3) on top of a machine's own difference
+NOISY_TOLERANCE = CONVERSION_TOLERANCE + 3
 
 
 def conversion_noise(monkeypatch, sigma=1.2, limit=3, seed=7):
@@ -320,7 +322,7 @@ def test_frames_still_correspond_where_another_swscale_converts_a_few_code_value
     conversion_noise(monkeypatch)
     path = str(cases[name])
     result = verify.compare(path)
-    assert 0 < result["max_pixel_diff"] <= CONVERSION_TOLERANCE  # it is noisy, and within the bound
+    assert 0 < result["max_pixel_diff"] <= NOISY_TOLERANCE  # it is noisy, and within the bound
     assert result["opencv_frames"] == result["ffmpeg_frames"] > 20
     assert result["misordered"] == 0 and result["shape_mismatch"] == 0 and result["ok"]
     assert decode._matches_opencv(path, "bt601", "tv", ("-fps_mode", "passthrough")) is None
