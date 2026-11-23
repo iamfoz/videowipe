@@ -95,8 +95,25 @@ def test_reader_command_never_seeks_or_resamples_time():
     cmd = decode.reader_command("in.mp4", "bt709", "tv")
     assert "-ss" not in cmd and "-r" not in cmd and "-vf" in cmd
     assert cmd[cmd.index("-fps_mode") + 1] == "passthrough"
-    assert "scale=in_color_matrix=bt709:in_range=tv,format=bgr24" in cmd
+    assert cmd[cmd.index("-vf") + 1].endswith("scale=in_color_matrix=bt709:in_range=tv,format=bgr24")
     assert cmd[-1] == "-" and cmd[cmd.index("-map") + 1] == "0:v:0"
+
+
+@pytest.mark.parametrize("matrix, rng, label", [
+    ("bt601", "tv", "colorspace=smpte170m:range=tv"),
+    ("bt601", "pc", "colorspace=smpte170m:range=pc"),
+    ("bt709", "tv", "colorspace=bt709:range=tv"),
+    ("bt709", "pc", "colorspace=bt709:range=pc"),
+    ("bt2020", "tv", "colorspace=bt2020nc:range=tv"),
+])
+def test_the_reader_relabels_the_frames_before_it_scales_them(matrix, rng, label):
+    """Whether ffmpeg follows the scaler's options or the frames' own colour properties
+    (newer ffmpeg may do the latter), the frames must carry what the reader converts
+    with: ``setparams`` first, then the scaler with the same matrix and range."""
+    cmd = decode.reader_command("in.mp4", matrix, rng)
+    filters = cmd[cmd.index("-vf") + 1].split(",")
+    assert filters == [f"setparams={label}", f"scale=in_color_matrix={matrix}:in_range={rng}",
+                       "format=bgr24"]
 
 
 # --- The reader as a capture ----------------------------------------------------------------
@@ -263,6 +280,95 @@ def test_the_reader_gets_back_the_colours_a_wrong_matrix_clips(tmp_path):
     # this OpenCV reads untagged HD as BT.601 (the reason for the reader), and tagged HD as BT.709
     assert grid["untagged HD"]["opencv"]["patches_wrong_over_8"] > 300
     assert grid["BT.709 tagged HD"]["opencv"]["patches_wrong_over_8"] == 0
+
+
+# --- A source that is labelled wrongly (what newer ffmpeg does differently) ------------------------
+
+PROBE_SIZE = 256
+#: (matrix, range the reader is asked for, the label the clip carries instead)
+MISLABELLED = [
+    ("bt709", "tv", "smpte170m", "pc"),
+    ("bt601", "tv", "bt709", "pc"),
+    ("bt601", "pc", "bt2020nc", "tv"),
+    ("bt2020", "pc", "bt709", "tv"),
+]
+
+
+def probe_clip(folder, space, rng):
+    """A clip of known YCbCr patches (``colour.PROBE_YUV``) labelled *space* and *rng*."""
+    path = folder / f"probe_{space}_{rng}.mp4"
+    cmd = ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s",
+           f"{PROBE_SIZE}x{PROBE_SIZE}", "-r", "25", "-i", "-", "-frames:v", "2", "-c:v", "libx264",
+           "-preset", "ultrafast", "-crf", "1", "-pix_fmt", "yuv420p",
+           *colour._labelled((), space, None, None, rng)]
+    raw = colour.probe_yuv_frame(PROBE_SIZE, PROBE_SIZE)
+    subprocess.run(cmd + [str(path)], input=raw * 2, check=True)
+    return str(path)
+
+
+def patch_error(frame_bytes, matrix, rng):
+    """Mean absolute error (code values) of the patches of a decoded BGR frame against
+    what *matrix* and *rng* give for the probe's YCbCr."""
+    frame = np.frombuffer(frame_bytes, np.uint8)[:PROBE_SIZE * PROBE_SIZE * 3]
+    rgb = frame.reshape(PROBE_SIZE, PROBE_SIZE, 3)[..., ::-1].astype(np.float64)
+    measured = np.array([rgb[y0:y1, x0:x1].mean(axis=(0, 1))
+                         for x0, y0, x1, y1 in colour.probe_patch_rects(PROBE_SIZE, PROBE_SIZE)])
+    return float(np.abs(decode._bgr_of(colour.PROBE_YUV, matrix, rng) - measured).mean())
+
+
+def decode_with(cmd):
+    return subprocess.run(cmd, capture_output=True, check=True).stdout
+
+
+def with_filters(cmd, keep):
+    """*cmd* with only the ``-vf`` filters for which ``keep(filter)`` is true."""
+    at = cmd.index("-vf") + 1
+    return cmd[:at] + [",".join(f for f in cmd[at].split(",") if keep(f))] + cmd[at + 1:]
+
+
+@pytest.mark.parametrize("matrix, rng, wrong_space, wrong_range", MISLABELLED)
+def test_a_wrongly_labelled_clip_is_decoded_as_asked(tmp_path, matrix, rng, wrong_space, wrong_range):
+    path = probe_clip(tmp_path, wrong_space, wrong_range)
+    cmd = decode.reader_command(path, matrix, rng)
+    assert patch_error(decode_with(cmd), matrix, rng) <= 1.6
+    reader = decode.FfmpegFrameReader(path, matrix, rng)
+    try:
+        ok, frame = reader.read()
+    finally:
+        reader.release()
+    assert ok and patch_error(frame.tobytes(), matrix, rng) <= 1.6
+
+
+@pytest.mark.parametrize("matrix, rng, wrong_space, wrong_range", MISLABELLED)
+def test_the_relabel_alone_gives_the_asked_colours_where_the_frames_win(
+        tmp_path, matrix, rng, wrong_space, wrong_range):
+    """Emulates an ffmpeg whose scaler follows the frames' colour properties over
+    ``in_color_matrix`` and ``in_range`` (the options are dropped, so the frames' labels
+    are all there is): the clip's own wrong labels would be used, if the reader did not
+    replace them first."""
+    clip = probe_clip(tmp_path, wrong_space, wrong_range)
+    cmd = decode.reader_command(clip, matrix, rng)
+    frames_win = with_filters(cmd, lambda f: not f.startswith("scale="))
+    assert patch_error(decode_with(frames_win), matrix, rng) <= 1.6
+    # the same emulation without the relabel reads the clip as it is labelled: this is
+    # what the test would see if the reader did not relabel
+    without_label = with_filters(frames_win, lambda f: not f.startswith("setparams="))
+    assert "setparams" not in without_label[without_label.index("-vf") + 1]
+    assert patch_error(decode_with(without_label), matrix, rng) > 3.0
+
+
+def test_the_start_up_check_passes_whichever_of_the_label_and_the_options_wins(tmp_path, monkeypatch):
+    sync = ("-fps_mode", "passthrough")
+    assert decode._reader_decodes_known_colours("bt709", "tv", sync)
+    real = decode.reader_command
+    # a reader that follows the frames' own (here wrong) labels: the check must refuse it
+    monkeypatch.setattr(decode, "reader_command", lambda path, matrix, rng, sync=sync: with_filters(
+        real(path, matrix, rng, sync), lambda f: f == "format=bgr24"))
+    assert not decode._reader_decodes_known_colours("bt709", "tv", sync)
+    # one that follows the frames, but relabels them first, passes
+    monkeypatch.setattr(decode, "reader_command", lambda path, matrix, rng, sync=sync: with_filters(
+        real(path, matrix, rng, sync), lambda f: not f.startswith("scale=")))
+    assert decode._reader_decodes_known_colours("bt709", "tv", sync)
 
 
 # --- The decision -----------------------------------------------------------------------------

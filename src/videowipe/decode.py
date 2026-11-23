@@ -12,11 +12,12 @@ This module provides :class:`FfmpegFrameReader`, a drop-in for the
 ``cv2.VideoCapture`` the inpainting path reads from (``read``, ``grab``,
 ``retrieve``, ``get``, ``release``): ffmpeg decodes the source and converts it to
 ``bgr24`` with the source's own matrix and range (its tags, or the BT.709 / BT.601
-size convention that players use when there are none), and the frames come down a
-pipe. Frames are identified by their sequential-read ordinal, exactly as with
-OpenCV: the reader yields one frame per decoded frame, in decode order, with no
-timestamp-driven duplication or dropping (``-fps_mode passthrough``), and never
-seeks. ``scripts/verify_decode_frames.py`` checks that, frame for frame, against
+size convention that players use when there are none; the frames are relabelled with
+them before the scaler, so it does not matter whether the scaler follows its options
+or the frames' own colour properties), and the frames come down a pipe. Frames are
+identified by their sequential-read ordinal, exactly as with OpenCV: the reader
+yields one frame per decoded frame, in decode order, with no timestamp-driven
+duplication or dropping (``-fps_mode passthrough``), and never seeks. ``scripts/verify_decode_frames.py`` checks that, frame for frame, against
 OpenCV on any source.
 
 ``VIDEOWIPE_DECODE`` selects the behaviour:
@@ -96,13 +97,25 @@ def source_conversion(source) -> tuple[str, str] | None:
 # -- the reader --------------------------------------------------------------------
 
 
+#: the ``colorspace`` tag that stands for each matrix when the reader relabels the frames
+_MATRIX_TAG = {"bt601": "smpte170m", "bt709": "bt709", "bt2020": "bt2020nc"}
+
+
 def reader_command(path: str, matrix: str, rng: str, sync=("-fps_mode", "passthrough")) -> list[str]:
     """The ffmpeg command that writes the first video stream of *path* to stdout as
     ``bgr24``, converted with *matrix* and *rng* (which override the stream's own
-    tags), one frame per decoded frame."""
+    tags), one frame per decoded frame.
+
+    The frames are relabelled with *matrix* and *rng* (``setparams``) before they are
+    scaled, as well as passing them to the scaler (``in_color_matrix``,
+    ``in_range``). Older ffmpeg takes the scaler's options over the frames' own
+    properties; newer ffmpeg may follow the frames, so a source whose tags disagree
+    with *matrix* and *rng* would be converted with its own tags. With the label and
+    the options in agreement, which of them wins does not matter."""
+    labels = f"setparams=colorspace={_MATRIX_TAG[matrix]}:range={rng}"
     return ["ffmpeg", "-nostdin", "-v", "error", "-nostats", "-i", path,
             "-map", "0:v:0", "-an", "-sn", "-dn", *sync,
-            "-vf", f"scale=in_color_matrix={matrix}:in_range={rng},format=bgr24",
+            "-vf", f"{labels},scale=in_color_matrix={matrix}:in_range={rng},format=bgr24",
             "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
 
 

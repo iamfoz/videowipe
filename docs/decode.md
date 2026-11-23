@@ -76,8 +76,16 @@ alone and so does not suffer from OpenCV's primaries conversion.
 
 `videowipe/decode.py` provides `FfmpegFrameReader`, which stands in for the
 `cv2.VideoCapture` the inpainting path reads from. ffmpeg decodes the source and
-converts to `bgr24` with `scale=in_color_matrix=M:in_range=R,format=bgr24`, and the
-frames come down a pipe. `M` and `R` are:
+converts to `bgr24` with `setparams=colorspace=T:range=R,scale=in_color_matrix=M:in_range=R,
+format=bgr24` (`T` is the tag that stands for `M`: smpte170m, bt709 or bt2020nc), and the
+frames come down a pipe. The `setparams` relabel comes first so that the frames carry the
+matrix and range the reader converts with: ffmpeg 6.1.1 takes the scaler's options over the
+frames' own colour properties, and newer ffmpeg (9.x on the reference Mac) may follow the
+frames, so a source whose tags disagree with `M` and `R` would otherwise be converted with
+its own. With both in agreement it does not matter which wins; on 6.1.1 the bytes are
+identical to the command without the relabel (every bundled sample, the generated cases
+of `scripts/verify_decode_frames.py`, each of the six matrix and range pairs). `M` and `R`
+are:
 
 1. the source's tags (`color_space`, `color_range`, or a `yuvj` pixel format);
 2. where there is no matrix tag, the convention players use: BT.709 for a picture
