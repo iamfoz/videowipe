@@ -33,6 +33,7 @@ def load_script(name):
 
 verify = load_script("verify_decode_frames")
 clipping = load_script("decode_clipping")
+override = load_script("verify_reader_override")
 
 needs_ffmpeg = pytest.mark.skipif(
     not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="requires ffmpeg and ffprobe")
@@ -53,6 +54,33 @@ def default_modes(monkeypatch):
 @pytest.fixture(scope="module")
 def cases(tmp_path_factory):
     return verify.generate(tmp_path_factory.mktemp("decode-cases"), frames=60)
+
+
+#: How far (8-bit code values) the reader's frame may be from OpenCV's frame of the same
+#: source when both convert alike. The two use different swscale versions (the system
+#: ffmpeg's and the one OpenCV bundles), which round and upsample chroma differently:
+#: bit for bit on some machines, up to 3 on others (mean about 1; measured with
+#: ffmpeg 9.1 against OpenCV 4.14.0). Order and count are what these tests prove.
+CONVERSION_TOLERANCE = 4
+CONVERSION_MEAN = 1.5
+
+
+def conversion_noise(monkeypatch, sigma=1.2, limit=3, seed=7):
+    """Make the ffmpeg reader's frames differ from what it read by a few code values
+    (mean about 1, at most 3, independent per pixel and frame) as another swscale
+    would, so that tests of correspondence can be run as they would be on a machine
+    whose ffmpeg is not OpenCV's."""
+    real = decode.FfmpegFrameReader.read
+    rng = np.random.default_rng(seed)
+
+    def read(self, image=None):
+        ok, frame = real(self)
+        if ok:
+            noise = np.clip(np.rint(rng.normal(0, sigma, frame.shape)), -limit, limit).astype(np.int16)
+            frame = np.clip(frame.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        return ok, frame
+
+    monkeypatch.setattr(decode.FfmpegFrameReader, "read", read)
 
 
 # --- Pure functions -------------------------------------------------------------------------
@@ -119,6 +147,12 @@ def test_the_reader_relabels_the_frames_before_it_scales_them(matrix, rng, label
 # --- The reader as a capture ----------------------------------------------------------------
 
 
+def close(a, b) -> bool:
+    """Two frames of the same picture, converted by different swscale versions."""
+    diff = np.abs(a.astype(np.int16) - b.astype(np.int16))
+    return diff.max() <= CONVERSION_TOLERANCE and diff.mean() <= CONVERSION_MEAN
+
+
 def test_it_behaves_like_a_capture(cases):
     path = str(cases["bframes"])
     ours = decode.FfmpegFrameReader(path, "bt601", "tv")
@@ -134,10 +168,10 @@ def test_it_behaves_like_a_capture(cases):
             assert ours.grab() and theirs.grab()
         ok_o, a = ours.retrieve()
         ok_t, b = theirs.retrieve()
-        assert ok_o and ok_t and np.array_equal(a, b)
+        assert ok_o and ok_t and a.shape == b.shape and close(a, b)
         ok_o, a = ours.read()
         ok_t, b = theirs.read()
-        assert np.array_equal(a, b)
+        assert close(a, b)
         assert ours.frames_delivered == 4
         # the frame read() returns belongs to the caller: it can be edited in place
         a[:] = 0
@@ -178,8 +212,10 @@ def test_a_missing_file_is_not_opened(tmp_path):
 
 # --- Same frames, same order (C1) -----------------------------------------------------------
 
-#: with the reader converting as this OpenCV does, the frames must be identical (they
-#: are, bit for bit, for 8-bit sources; 10-bit goes through a different swscale path)
+#: with the reader converting as this OpenCV does, the frames must be the same frames in the
+#: same order, and the same pictures to within the swscale versions' rounding (they are bit
+#: for bit identical where the two swscale versions agree; 10-bit goes through a different
+#: path and is not compared pixel by pixel)
 IDENTICAL = ["bframes", "vfr_mp4", "vfr_webm", "vfr_vp8_webm", "editlist_cut", "editlist_delay",
              "editlist_cut_vfr", "hevc_mkv", "rotated", "odd_size", "bt709_tagged", "yuv422p",
              "yuv444p", "full_range"]
@@ -193,7 +229,8 @@ def test_generated_sources_yield_opencvs_frames_in_opencvs_order(name, cases):
     assert result["opencv_frames"] == result["ffmpeg_frames"] > 20
     assert not result["ffmpeg_ends_early"] and not result["ffmpeg_has_extra"]
     assert result["shape_mismatch"] == 0 and result["misordered"] == 0
-    assert result["max_pixel_diff"] == 0 and result["ok"]
+    assert result["max_pixel_diff"] <= CONVERSION_TOLERANCE and result["max_mean_diff"] <= CONVERSION_MEAN
+    assert result["ok"]
 
 
 def test_the_generated_awkward_sources_are_awkward(cases):
@@ -221,7 +258,8 @@ def test_bundled_samples_in_step_with_opencv(name):
     # the first 120 frames of each (the full runs are in docs/decode.md)
     result = verify.compare(str(SAMPLES / f"{name}.mp4"), max_frames=120)
     assert result["opencv_frames"] == result["ffmpeg_frames"] == 120
-    assert result["misordered"] == 0 and result["max_pixel_diff"] == 0 and result["ok"]
+    assert result["misordered"] == 0 and result["ok"]
+    assert result["max_pixel_diff"] <= CONVERSION_TOLERANCE and result["max_mean_diff"] <= CONVERSION_MEAN
 
 
 def test_ten_bit_frames_correspond_even_though_the_conversion_differs(cases):
@@ -230,9 +268,13 @@ def test_ten_bit_frames_correspond_even_though_the_conversion_differs(cases):
     assert result["misordered"] == 0 and result["shape_mismatch"] == 0
 
 
-def test_a_dropped_frame_would_be_noticed(cases, monkeypatch):
+@pytest.mark.parametrize("noisy", [False, True])
+def test_a_dropped_frame_would_be_noticed(cases, monkeypatch, noisy):
     """The comparison is only worth something if it can fail: an ffmpeg that dropped
-    one frame in the middle shifts every later frame by one."""
+    one frame in the middle shifts every later frame by one (also where the readers'
+    conversions differ by a few code values)."""
+    if noisy:
+        conversion_noise(monkeypatch)
     real = decode.FfmpegFrameReader.read
     state = {"n": 0}
 
@@ -247,9 +289,12 @@ def test_a_dropped_frame_would_be_noticed(cases, monkeypatch):
     assert result["misordered"] > 0 and not result["ok"]
 
 
-def test_the_start_up_check_notices_a_shifted_or_missing_start(cases, monkeypatch):
+@pytest.mark.parametrize("noisy", [False, True])
+def test_the_start_up_check_notices_a_shifted_or_missing_start(cases, monkeypatch, noisy):
     path = str(cases["bframes"])
     sync = ("-fps_mode", "passthrough")
+    if noisy:
+        conversion_noise(monkeypatch)
     assert decode._matches_opencv(path, "bt601", "tv", sync) is None
     # a different conversion is a different colour, not a different frame
     assert decode._matches_opencv(path, "bt709", "tv", sync) is None
@@ -266,6 +311,45 @@ def test_the_start_up_check_notices_a_shifted_or_missing_start(cases, monkeypatc
     assert "does not correspond" in decode._matches_opencv(path, "bt601", "tv", sync)
 
 
+@pytest.mark.parametrize("name", ["bframes", "vfr_mp4", "editlist_cut", "odd_size", "bt709_tagged",
+                                  "yuv444p", "full_range"])
+def test_frames_still_correspond_where_another_swscale_converts_a_few_code_values_apart(
+        name, cases, monkeypatch):
+    """What a machine whose ffmpeg is not OpenCV's sees (mean about 1, at most 3): the
+    comparison of count and order, and the start-up check, must still pass."""
+    conversion_noise(monkeypatch)
+    path = str(cases[name])
+    result = verify.compare(path)
+    assert 0 < result["max_pixel_diff"] <= CONVERSION_TOLERANCE  # it is noisy, and within the bound
+    assert result["opencv_frames"] == result["ffmpeg_frames"] > 20
+    assert result["misordered"] == 0 and result["shape_mismatch"] == 0 and result["ok"]
+    assert decode._matches_opencv(path, "bt601", "tv", ("-fps_mode", "passthrough")) is None
+
+
+@pytest.mark.parametrize("name", ["english1", "chinese1"])
+def test_bundled_samples_correspond_with_a_noisy_conversion(name, monkeypatch):
+    conversion_noise(monkeypatch)
+    path = str(SAMPLES / f"{name}.mp4")
+    result = verify.compare(path, max_frames=40)
+    assert result["opencv_frames"] == result["ffmpeg_frames"] == 40
+    assert result["misordered"] == 0 and result["ok"]
+    assert decode._matches_opencv(path, "bt601", "tv", ("-fps_mode", "passthrough")) is None
+
+
+def test_the_known_colours_check_allows_for_a_noisy_conversion(monkeypatch):
+    """The check's limit (mean error 1.6) is a mean over patches: a conversion that is
+    a code value out per pixel (mean about 1, at most 3) still passes, and the wrong
+    matrix does not (4.1 away on the probe at the closest)."""
+    conversion_noise(monkeypatch)
+    sync = ("-fps_mode", "passthrough")
+    for matrix, rng in (("bt601", "tv"), ("bt709", "tv"), ("bt709", "pc"), ("bt2020", "tv")):
+        assert decode._reader_decodes_known_colours(matrix, rng, sync), (matrix, rng)
+    real = decode.reader_command
+    monkeypatch.setattr(decode, "reader_command", lambda path, matrix, rng, sync=sync: real(
+        path, "bt601" if matrix == "bt709" else "bt709", rng, sync))  # converts with the wrong one
+    assert not decode._reader_decodes_known_colours("bt709", "tv", sync)
+
+
 # --- Colour -----------------------------------------------------------------------------------
 
 
@@ -277,66 +361,34 @@ def test_the_reader_gets_back_the_colours_a_wrong_matrix_clips(tmp_path):
         # a decoder that reads the source as BT.601 loses colours to clipping
         assert row["bt601-only"]["patches_wrong_over_8"] > 300
         assert row["bt601-only"]["patches_clipped"] > 100 and max(row["bt601-only"]["max_err_rgb"]) > 30
-    # this OpenCV reads untagged HD as BT.601 (the reason for the reader), and tagged HD as BT.709
+    # OpenCV reads untagged HD as BT.601 (the reason for the reader). Whether it honours a
+    # BT.709 tag depends on the build (the reference Mac's does not), so the tagged row
+    # is checked against what this OpenCV measurably does.
     assert grid["untagged HD"]["opencv"]["patches_wrong_over_8"] > 300
-    assert grid["BT.709 tagged HD"]["opencv"]["patches_wrong_over_8"] == 0
+    honours = colour.decoder_conversion(clipping.WIDTH, clipping.HEIGHT, "bt709", "bt709", "bt709", "tv")
+    wrong = grid["BT.709 tagged HD"]["opencv"]["patches_wrong_over_8"]
+    assert (wrong == 0) if honours == ("bt709", "tv") else (wrong > 300)
 
 
 # --- A source that is labelled wrongly (what newer ffmpeg does differently) ------------------------
 
-PROBE_SIZE = 256
-#: (matrix, range the reader is asked for, the label the clip carries instead)
-MISLABELLED = [
-    ("bt709", "tv", "smpte170m", "pc"),
-    ("bt601", "tv", "bt709", "pc"),
-    ("bt601", "pc", "bt2020nc", "tv"),
-    ("bt2020", "pc", "bt709", "tv"),
-]
-
-
-def probe_clip(folder, space, rng):
-    """A clip of known YCbCr patches (``colour.PROBE_YUV``) labelled *space* and *rng*."""
-    path = folder / f"probe_{space}_{rng}.mp4"
-    cmd = ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s",
-           f"{PROBE_SIZE}x{PROBE_SIZE}", "-r", "25", "-i", "-", "-frames:v", "2", "-c:v", "libx264",
-           "-preset", "ultrafast", "-crf", "1", "-pix_fmt", "yuv420p",
-           *colour._labelled((), space, None, None, rng)]
-    raw = colour.probe_yuv_frame(PROBE_SIZE, PROBE_SIZE)
-    subprocess.run(cmd + [str(path)], input=raw * 2, check=True)
-    return str(path)
-
-
-def patch_error(frame_bytes, matrix, rng):
-    """Mean absolute error (code values) of the patches of a decoded BGR frame against
-    what *matrix* and *rng* give for the probe's YCbCr."""
-    frame = np.frombuffer(frame_bytes, np.uint8)[:PROBE_SIZE * PROBE_SIZE * 3]
-    rgb = frame.reshape(PROBE_SIZE, PROBE_SIZE, 3)[..., ::-1].astype(np.float64)
-    measured = np.array([rgb[y0:y1, x0:x1].mean(axis=(0, 1))
-                         for x0, y0, x1, y1 in colour.probe_patch_rects(PROBE_SIZE, PROBE_SIZE)])
-    return float(np.abs(decode._bgr_of(colour.PROBE_YUV, matrix, rng) - measured).mean())
-
-
-def decode_with(cmd):
-    return subprocess.run(cmd, capture_output=True, check=True).stdout
-
-
-def with_filters(cmd, keep):
-    """*cmd* with only the ``-vf`` filters for which ``keep(filter)`` is true."""
-    at = cmd.index("-vf") + 1
-    return cmd[:at] + [",".join(f for f in cmd[at].split(",") if keep(f))] + cmd[at + 1:]
+MISLABELLED = override.MISLABELLED
+probe_clip, patch_error = override.probe_clip, override.patch_error
+decode_with, with_filters = override.decode_with, override.with_filters
+LIMIT = override.LIMIT  # the start-up check's limit on the mean error
 
 
 @pytest.mark.parametrize("matrix, rng, wrong_space, wrong_range", MISLABELLED)
 def test_a_wrongly_labelled_clip_is_decoded_as_asked(tmp_path, matrix, rng, wrong_space, wrong_range):
     path = probe_clip(tmp_path, wrong_space, wrong_range)
     cmd = decode.reader_command(path, matrix, rng)
-    assert patch_error(decode_with(cmd), matrix, rng) <= 1.6
+    assert patch_error(decode_with(cmd), matrix, rng) <= LIMIT
     reader = decode.FfmpegFrameReader(path, matrix, rng)
     try:
         ok, frame = reader.read()
     finally:
         reader.release()
-    assert ok and patch_error(frame.tobytes(), matrix, rng) <= 1.6
+    assert ok and patch_error(frame.tobytes(), matrix, rng) <= LIMIT
 
 
 @pytest.mark.parametrize("matrix, rng, wrong_space, wrong_range", MISLABELLED)
@@ -349,7 +401,7 @@ def test_the_relabel_alone_gives_the_asked_colours_where_the_frames_win(
     clip = probe_clip(tmp_path, wrong_space, wrong_range)
     cmd = decode.reader_command(clip, matrix, rng)
     frames_win = with_filters(cmd, lambda f: not f.startswith("scale="))
-    assert patch_error(decode_with(frames_win), matrix, rng) <= 1.6
+    assert patch_error(decode_with(frames_win), matrix, rng) <= LIMIT
     # the same emulation without the relabel reads the clip as it is labelled: this is
     # what the test would see if the reader did not relabel
     without_label = with_filters(frames_win, lambda f: not f.startswith("setparams="))
@@ -440,7 +492,8 @@ def test_where_opencv_already_converts_correctly_it_keeps_decoding(tmp_path, mon
     """A decoder that honours the tag (this machine's) needs no replacing; one that
     reads every source as BT.601 (the reference Mac's) does."""
     tagged = make(tmp_path, "tagged.mp4", "1280x720", "yuv420p", "-colorspace", "bt709")
-    assert decode.decide(tagged) is None  # honoured here: unchanged
+    monkeypatch.setattr(colour, "decoder_conversion", lambda *args: ("bt709", "tv"))
+    assert decode.decide(tagged) is None  # a decoder that honours the tag: unchanged
     decode._decide.cache_clear()
     monkeypatch.setattr(colour, "decoder_conversion", lambda *args: ("bt601", "tv"))
     plan = decode.decide(tagged)

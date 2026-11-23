@@ -110,8 +110,16 @@ drop frames to fit a frame rate (`-vsync passthrough` on an ffmpeg that has no
 
 `scripts/verify_decode_frames.py` reads a source with OpenCV and the reader in
 lockstep, with the reader converting as this OpenCV measurably does for that source.
-Then the frames must be identical: they are, bit for bit, for every 8-bit source
-tried (largest pixel difference 0), so frame *i* of one is frame *i* of the other.
+Then the frames must be the same pictures in the same order: they are, bit for bit, for
+every 8-bit source tried on the machine measured (system ffmpeg 6.1.1 and OpenCV 4.14.0;
+largest pixel difference 0), so frame *i* of one is frame *i* of the other. Where the
+system ffmpeg's libswscale is not the one OpenCV bundles the two round and upsample
+chroma differently: on the reference Mac (ffmpeg 9.1 against OpenCV's avcodec 61) the
+counts and order were right and the pixels differed by at most 3 (mean about 1), which
+is a difference of conversion, not of frame. The tests therefore require equal counts,
+no misordered frame and a difference of at most 4 (mean 1.5), and check the same with
+noise of that size added to the reader's frames (`conversion_noise`); a dropped frame
+is still caught.
 It also reports any frame for which a neighbour of the other reader matches better
 than the frame itself (a dropped, repeated or shifted frame).
 
@@ -230,6 +238,7 @@ On the reference Mac:
     python scripts/colour_roundtrip.py --probe decode          # which matrix OpenCV uses there
     python scripts/colour_roundtrip.py --probe table --decode auto --classes hd709_tv,hd_untagged
     python scripts/verify_decode_frames.py --generate /tmp/decode-cases --correct
+    python scripts/verify_reader_override.py                  # does a wrongly labelled clip decode as asked?
 
 The first shows the clipping; `colour_roundtrip` with `auto` should switch every BT.709
 class to the ffmpeg reader (look for `Decoding with ffmpeg`) and give the dE of the
@@ -251,3 +260,8 @@ BT.601 (the reference Mac's does) it is the BT.601 against BT.709 difference, se
 code values, for exactly the clips tagged BT.709 (`bt709_tagged`, `yuv422p`, `yuv444p`,
 `full_range`, `yuv420p10`). `yuv420p10` differs further by OpenCV's own 10-bit
 conversion (1.60 here).
+
+`verify_reader_override.py` prints, for clips labelled with the wrong matrix and range, the
+colour error of the reader's command, of the relabel alone (the scaler's options dropped:
+the case where the frames win), of the options alone and of neither; `full` and `label only`
+must be under 1.6, and the other two show which of label and options this ffmpeg follows.
