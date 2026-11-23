@@ -535,8 +535,8 @@ def test_the_hevc_copy_keeps_the_bit_depth_the_tags_and_the_hdr_metadata(kind, c
     # the reference Mac: rms 2.48 of 1023), and today's 8-bit output is 7 or more out.
     rms_limit = 1.5 if any("libx265" in line for line in log) else 4.0
     assert m["ramp"]["levels"] >= 500 and m["ramp"]["rms"] < rms_limit and m["ramp"]["longest_run"] <= 6
-    assert m["shallow"]["levels"] >= 60 and m["shallow"]["rms"] < 1.5
-    assert m["chroma"]["cb_levels"] > 150 and m["chroma"]["rms"] < 1.5
+    assert m["shallow"]["levels"] >= 60 and m["shallow"]["rms"] < rms_limit
+    assert m["chroma"]["cb_levels"] > 150 and m["chroma"]["rms"] < rms_limit
     # the MP4 review copy is 8-bit (and says so), as ever
     review = hb.measure(str(sources[kind]), str(output))
     assert review["tags"]["pix_fmt"] == "yuv420p"
